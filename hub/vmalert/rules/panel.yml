@@ -15,7 +15,10 @@ groups:
   # Панель знает ноды только по UUID. Имя берём из basic_info — так список
   # нод не нужно вести руками: появилась нода в панели, появилась в боте.
   - record: node:name_map
-    expr: max by(node_uuid, node) (label_replace(remnawave_node_basic_info, "node", "$1", "node_name", "(.+)"))
+    expr: |
+      max by(node_uuid, node, node_country_emoji, provider_name) (
+        label_replace(remnawave_node_basic_info, "node", "$1", "node_name", "(.+)")
+      )
 
   - record: node:panel_status
     expr: max by(node) (remnawave_node_status * on(node_uuid) group_left(node) node:name_map)

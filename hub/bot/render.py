@@ -57,7 +57,7 @@ def status_table(nodes: dict[str, dict]) -> str:
     for name in sorted(nodes):
         s = nodes[name]
         lines.append(
-            f"{node_icon(s)} <b>{name}</b>\n"
+            f"{node_icon(s)} {s.get('flag', '')} <b>{name}</b>\n"
             f"    ЦП {pct(s.get('cpu'))} · ОЗУ {pct(s.get('mem'))} · "
             f"↑{bps(s.get('tx'))} ↓{bps(s.get('rx'))}"
             + (f" · 👥 {int(s['users'])}" if s.get("users") is not None else "")
@@ -73,8 +73,9 @@ def node_card(name: str, s: dict) -> str:
     port = "открыт" if s.get("tcp_ru") == 1 else "❗️закрыт"
 
     return (
-        f"{node_icon(s)} <b>{name}</b>\n"
-        f"<i>{s.get('hoster', '—')} · {s.get('public_ip', '—')}</i>\n\n"
+        f"{node_icon(s)} {s.get('flag', '')} <b>{name}</b>\n"
+        f"<i>{s.get('provider') or s.get('hoster') or '—'}"
+        f"{' · ' + s['public_ip'] if s.get('public_ip') else ''}</i>\n\n"
         f"<b>Доступность</b>\n"
         f"  из NL: {nl}\n"
         f"  из РФ: {ru}\n"

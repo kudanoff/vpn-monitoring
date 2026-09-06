@@ -1,7 +1,10 @@
 .PHONY: up down logs restart deploy check backup
 
-up:            ## Поднять хаб
+up:            ## Поднять хаб (первый этап: метрики панели + пробники)
 	cd hub && docker compose up -d --build
+
+up-nodes:      ## То же плюс рефлектор iperf3 — когда пойдёт второй этап
+	cd hub && docker compose --profile nodes up -d --build
 
 down:
 	cd hub && docker compose down

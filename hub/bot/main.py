@@ -107,6 +107,15 @@ async def collect(session: aiohttp.ClientSession, detailed: bool = False) -> dic
                 state[field] = state[source]
                 state.setdefault("from_panel", set()).add(field)
 
+    # Флаг страны и провайдер приходят от панели — подписываем ими карточки.
+    try:
+        for row in await instant(session, "node:name_map"):
+            meta = nodes.setdefault(row["node"], {})
+            meta["flag"] = row.get("node_country_emoji", "")
+            meta["provider"] = row.get("provider_name", "")
+    except Exception as exc:
+        log.warning("не удалось получить имена нод: %s", exc)
+
     # Ноды, которые есть в конфиге, но ещё ни разу не отдали метрик,
     # всё равно должны быть видны — иначе пропажу легко не заметить.
     for row in await instant(session, 'up{job="node"}'):

@@ -75,7 +75,9 @@ services:
     <<: *restart
     image: networkstatic/iperf3:latest
     command: [-s]
-    # Рефлектор для замеров скорости с нод. Только приватная сеть.
+    # Рефлектор для замеров скорости с нод. Нужен только на втором этапе,
+    # поэтому под профилем: make up его не трогает.
+    profiles: [nodes]
     ports:
       - "${HUB_PRIVATE_IP:-127.0.0.1}:5201:5201"
     networks: [mon]

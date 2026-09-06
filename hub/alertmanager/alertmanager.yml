@@ -11,6 +11,11 @@ route:
   repeat_interval: 4h
 
   routes:
+    # Архивные и служебные ноды выключены в панели намеренно — алерты по ним
+    # это ложные тревоги. Держите этот список в согласии с NODES_IGNORE в .env.
+    - receiver: blackhole
+      matchers: ['node =~ "(?i).*(archive|ipcheker).*"']
+
     # Сторож ходит отдельным маршрутом и редко.
     - receiver: bot-watchdog
       matchers: [severity = "watchdog"]
@@ -39,6 +44,9 @@ inhibit_rules:
     equal: [node]
 
 receivers:
+  # Молчаливый приёмник: сюда уходит то, о чём сообщать не надо.
+  - name: blackhole
+
   - name: bot
     webhook_configs:
       - url: http://bot:8080/alerts

@@ -49,20 +49,61 @@ LEGEND = (
 )
 
 
-def status_table(nodes: dict[str, dict]) -> str:
-    if not nodes:
-        return "Пока нет данных. Проверьте, что ноды добавлены в targets/nodes.yml."
+def _line(name: str, s: dict) -> str:
+    return (
+        f"{node_icon(s)} {s.get('flag', '')} <b>{name}</b>\n"
+        f"    ЦП {pct(s.get('cpu'))} · ОЗУ {pct(s.get('mem'))} · "
+        f"↑{bps(s.get('tx'))} ↓{bps(s.get('rx'))}"
+        + (f" · 👥 {int(s['users'])}" if s.get("users") is not None else "")
+        + ("  ·  📋" if s.get("from_panel") else "")
+    )
 
-    lines = ["<b>Статус нод</b>", ""]
+
+def status_summary(nodes: dict[str, dict]) -> str:
+    """
+    Главный экран. Отвечает на вопрос "всё ли в порядке" за одну секунду:
+    сначала счётчики, потом только проблемные ноды. Сорок строк зелёного
+    листать никто не будет, а значит и проблему в них не заметит.
+    """
+    if not nodes:
+        return "Пока нет данных. Проверьте, что метрики панели доезжают."
+
+    problems = {n: s for n, s in nodes.items() if node_icon(s) != "🟢"}
+    ok_count = len(nodes) - len(problems)
+
+    lines = [f"<b>Ноды: {len(nodes)}</b>", ""]
+
+    users = sum(int(s["users"]) for s in nodes.values() if s.get("users"))
+    traffic = sum(s.get("tx") or 0 for s in nodes.values())
+    lines.append(f"🟢 в норме: {ok_count}    👥 онлайн: {users}    ↑ всего: {bps(traffic)}")
+
+    if not problems:
+        lines += ["", "Проблем нет."]
+    else:
+        lines += ["", f"<b>Требуют внимания — {len(problems)}</b>", ""]
+        # Сначала то, что горит ярче: упавшие, потом блокировки, потом остальное.
+        order = {"🔴": 0, "🚧": 1, "⚪️": 2, "🟡": 3}
+        for name in sorted(problems, key=lambda n: (order.get(node_icon(problems[n]), 9), n)):
+            lines.append(_line(name, problems[name]))
+
+    # Самые нагруженные — чтобы видеть, где горит канал, не открывая графики.
+    top = sorted(nodes.items(), key=lambda kv: kv[1].get("tx") or 0, reverse=True)[:5]
+    if top and (top[0][1].get("tx") or 0) > 0:
+        lines += ["", "<b>Больше всего трафика</b>"]
+        for name, s in top:
+            lines.append(f"  {s.get('flag', '')} {name} — ↑{bps(s.get('tx'))} · 👥 {int(s.get('users') or 0)}")
+
+    lines += ["", f"<i>{LEGEND}</i>"]
+    return "\n".join(lines)
+
+
+def status_table(nodes: dict[str, dict]) -> str:
+    """Полный список — по кнопке, когда действительно нужен весь парк."""
+    if not nodes:
+        return "Пока нет данных."
+    lines = ["<b>Все ноды</b>", ""]
     for name in sorted(nodes):
-        s = nodes[name]
-        lines.append(
-            f"{node_icon(s)} {s.get('flag', '')} <b>{name}</b>\n"
-            f"    ЦП {pct(s.get('cpu'))} · ОЗУ {pct(s.get('mem'))} · "
-            f"↑{bps(s.get('tx'))} ↓{bps(s.get('rx'))}"
-            + (f" · 👥 {int(s['users'])}" if s.get("users") is not None else "")
-            + ("  ·  📋" if s.get("from_panel") else "")
-        )
+        lines.append(_line(name, nodes[name]))
     lines += ["", f"<i>{LEGEND}</i>"]
     return "\n".join(lines)
 

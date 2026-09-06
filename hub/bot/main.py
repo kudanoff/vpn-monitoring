@@ -11,6 +11,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import time
 
 import aiohttp
@@ -32,6 +33,9 @@ TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
 ADMINS = {int(x) for x in os.getenv("TELEGRAM_ADMINS", "").replace(" ", "").split(",") if x}
 WEBHOOK_SECRET = os.getenv("REMNAWAVE_WEBHOOK_SECRET", "")
+# Ноды, которые не нужно показывать и по которым не нужно алертить:
+# архивные, тестовые, служебные. Регулярное выражение по имени из панели.
+IGNORE_RE = re.compile(os.getenv("NODES_IGNORE", r"archive|ipcheker"), re.IGNORECASE)
 ALERTMANAGER_URL = os.getenv("ALERTMANAGER_URL", "http://alertmanager:9093")
 HEALTHCHECKS_URL = os.getenv("HEALTHCHECKS_URL", "")
 
@@ -108,10 +112,17 @@ async def collect(session: aiohttp.ClientSession, detailed: bool = False) -> dic
                 state[field] = state[source]
                 state.setdefault("from_panel", set()).add(field)
 
+    # Отсекаем архивные и служебные ноды: они всегда "отключены" и,
+    # если их не убрать, сводка на две трети состоит из ложных тревог.
+    for name in [n for n in nodes if IGNORE_RE.search(n)]:
+        del nodes[name]
+
     # Флаг страны и провайдер приходят от панели — подписываем ими карточки.
     try:
         for row in await instant(session, "node:name_map"):
-            meta = nodes.setdefault(row["node"], {})
+            if IGNORE_RE.search(row["node"]) or row["node"] not in nodes:
+                continue
+            meta = nodes[row["node"]]
             meta["flag"] = row.get("node_country_emoji", "")
             meta["provider"] = row.get("provider_name", "")
     except Exception as exc:
@@ -135,10 +146,12 @@ def allowed(message: Message) -> bool:
     return not ADMINS or message.from_user.id in ADMINS
 
 
-def refresh_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="🔄 Обновить", callback_data="refresh")]]
-    )
+def kb(full: bool = False) -> InlineKeyboardMarkup:
+    other = ("📋 Кратко", "refresh") if full else ("📋 Все ноды", "all")
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🔄 Обновить", callback_data="all" if full else "refresh"),
+        InlineKeyboardButton(text=other[0], callback_data=other[1]),
+    ]])
 
 
 @dp.message(Command("start", "help"))
@@ -148,7 +161,9 @@ async def cmd_help(message: Message) -> None:
         "/status — сводка по всем нодам\n"
         "/node &lt;имя&gt; — подробности по ноде\n"
         "/mute &lt;имя&gt; &lt;часы&gt; — заглушить алерты на время работ\n"
-        "/unmute &lt;имя&gt; — снять заглушку\n"
+        "/unmute &lt;имя&gt; — снять заглушку\n\n"
+        "<i>Архивные и служебные ноды скрыты. Список задаётся "
+        "переменной NODES_IGNORE в .env</i>"
     )
 
 
@@ -158,19 +173,21 @@ async def cmd_status(message: Message) -> None:
         return
     async with aiohttp.ClientSession() as session:
         nodes = await collect(session)
-    await message.answer(render.status_table(nodes), reply_markup=refresh_kb())
+    await message.answer(render.status_summary(nodes), reply_markup=kb())
 
 
-@dp.callback_query(F.data == "refresh")
-async def cb_refresh(call: CallbackQuery) -> None:
+@dp.callback_query(F.data.in_({"refresh", "all"}))
+async def cb_view(call: CallbackQuery) -> None:
+    full = call.data == "all"
     async with aiohttp.ClientSession() as session:
         nodes = await collect(session)
-    text = render.status_table(nodes) + f"\n<i>обновлено {time.strftime('%H:%M:%S')}</i>"
+    body = render.status_table(nodes) if full else render.status_summary(nodes)
+    text = body + f"\n<i>обновлено {time.strftime('%H:%M:%S')}</i>"
     try:
-        await call.message.edit_text(text, reply_markup=refresh_kb())
+        await call.message.edit_text(text, reply_markup=kb(full))
     except Exception:
         pass  # Telegram ругается, если текст не изменился — это нормально
-    await call.answer("Обновлено")
+    await call.answer()
 
 
 @dp.message(Command("node"))

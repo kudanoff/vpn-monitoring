@@ -18,6 +18,7 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramUnauthorizedError
 from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -319,7 +320,25 @@ async def run_web() -> None:
 
 async def main() -> None:
     await run_web()
-    await bot.send_message(CHAT_ID, "🚀 Мониторинг запущен. /status — сводка")
+
+    # Неверный токен — единственная причина, по которой стартовать бессмысленно.
+    # Говорим об этом одной понятной строкой, а не трейсбеком на весь экран.
+    try:
+        me = await bot.get_me()
+        log.info("бот @%s на связи", me.username)
+    except TelegramUnauthorizedError:
+        log.error("Telegram отверг токен. Проверьте TELEGRAM_BOT_TOKEN в hub/.env "
+                  "(после Revoke у BotFather токен меняется) и перезапустите бота.")
+        raise SystemExit(1)
+
+    # А вот недоступный чат ронять бота не должен: команды в личке будут
+    # работать, и по логу сразу видно, что чинить.
+    try:
+        await bot.send_message(CHAT_ID, "🚀 Мониторинг запущен. /status — сводка")
+    except Exception as exc:
+        log.error("не удалось написать в чат %s: %s. Проверьте TELEGRAM_CHAT_ID "
+                  "и что бот добавлен в группу с правом писать.", CHAT_ID, exc)
+
     await dp.start_polling(bot)
 
 

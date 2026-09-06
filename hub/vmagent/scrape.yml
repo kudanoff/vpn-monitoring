@@ -17,18 +17,20 @@ scrape_configs:
   - job_name: remnawave
     metrics_path: /metrics
     basic_auth:
-      username: metrics
+      # Логин и пароль лежат в файлах, а не в конфиге: репозиторий может
+      # оказаться публичным, а креды панели туда попадать не должны.
+      username_file: /etc/secrets/panel_metrics_user
       password_file: /etc/secrets/panel_metrics_password
     static_configs:
       - targets: ["PANEL_PRIVATE_IP:3001"]
         labels:
           service: remnawave-panel
     metric_relabel_configs:
-      # Панель называет ноду в лейбле node_name, у node_exporter это node.
-      # Приводим к общему знаменателю, чтобы метрики можно было джойнить.
-      - source_labels: [node_name]
-        target_label: node
-        regex: (.+)
+      # Панель помечает ноды только UUID-ом. Человеческое имя знаем мы сами —
+      # оно лежит в targets/nodes.yml рядом с тем же UUID, и связывание
+      # происходит правилом node:uuid_map в vmalert.
+      - action: labeldrop
+        regex: app
 
   # ── 3. Доступность нод с двух точек обзора ──────────────────────────────
   #     Разница между ними и есть диагноз "жив, но зарезан ТСПУ".

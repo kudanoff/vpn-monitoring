@@ -69,7 +69,10 @@ Tailscale не используется намеренно: его сайт и �
 ```bash
 git clone <repo> && cd vpn-monitoring/hub
 cp .env.example .env && $EDITOR .env
-echo -n 'пароль_от_METRICS_PASS' > secrets/panel_metrics_password
+# Логин и пароль METRICS_* из .env панели, строго без перевода строки
+printf '%s' 'METRICS_USER' > secrets/panel_metrics_user
+printf '%s' 'METRICS_PASS' > secrets/panel_metrics_password
+chmod 600 secrets/panel_metrics_*
 ```
 
 В `vmagent/scrape.yml` заменить два плейсхолдера: `PANEL_PRIVATE_IP` (адрес панели в WireGuard, обычно 10.77.0.2) и `RU_PROBER_PRIVATE_IP` (он же, порт 9115).

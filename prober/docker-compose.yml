@@ -9,7 +9,7 @@ services:
     restart: unless-stopped
     command: [--config.file=/etc/blackbox/blackbox.yml]
     volumes:
-      - ../hub/blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+      - ./blackbox.yml:/etc/blackbox/blackbox.yml:ro
     cap_add: [NET_RAW]
     ports:
       # Только приватная сеть — сюда ходит vmagent с хаба.

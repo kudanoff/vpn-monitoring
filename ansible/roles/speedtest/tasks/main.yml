@@ -1,0 +1,17 @@
+- name: Скрипт замера скорости порта
+  ansible.builtin.template:
+    src: port-speed.sh.j2
+    dest: /usr/local/bin/port-speed.sh
+    mode: "0755"
+
+- name: Cron на замер
+  ansible.builtin.cron:
+    name: "port speedtest"
+    user: root
+    minute: "13"
+    hour: "{{ speedtest_hours }}"
+    job: "sleep $((RANDOM \\% 900)); /usr/local/bin/port-speed.sh >/dev/null 2>&1"
+
+- name: Первый замер сразу, чтобы метрика появилась не через 6 часов
+  ansible.builtin.command: /usr/local/bin/port-speed.sh
+  changed_when: true

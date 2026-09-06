@@ -1,0 +1,16 @@
+# Пробник для РФ-локации. Ставится на сервер, где живёт панель Remnawave.
+# Ничего не хранит и не решает — только отвечает на запросы "пропингуй вот это".
+# Памяти ест ~20 МБ, его падение ничего не ломает.
+name: vpnmon-prober
+
+services:
+  blackbox:
+    image: prom/blackbox-exporter:v0.27.0
+    restart: unless-stopped
+    command: [--config.file=/etc/blackbox/blackbox.yml]
+    volumes:
+      - ../hub/blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    cap_add: [NET_RAW]
+    ports:
+      # Только приватная сеть — сюда ходит vmagent с хаба.
+      - "${PROBER_PRIVATE_IP:-127.0.0.1}:9115:9115"

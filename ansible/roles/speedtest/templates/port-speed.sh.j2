@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Меряет реальную скорость порта до нашего рефлектора и кладёт результат
+# в textfile-коллектор node_exporter. Публичные speedtest-сервисы не годятся:
+# они рейт-лимитят и врут, а нам нужна воспроизводимая цифра для тикета хостеру.
+set -euo pipefail
+
+REFLECTOR="{{ hub_private_ip }}"
+DURATION={{ speedtest_duration }}
+EXPECTED_BPS=$(( {{ link_mbit | default(1000) }} * 1000000 ))
+OUT=/var/lib/node_exporter/textfile/port_speed.prom
+TMP="${OUT}.$$"
+
+down=0
+up=0
+
+if json=$(iperf3 -c "$REFLECTOR" -t "$DURATION" -J 2>/dev/null); then
+  down=$(echo "$json" | jq -r '.end.sum_received.bits_per_second // 0')
+fi
+if json=$(iperf3 -c "$REFLECTOR" -t "$DURATION" -R -J 2>/dev/null); then
+  up=$(echo "$json" | jq -r '.end.sum_received.bits_per_second // 0')
+fi
+
+{
+  echo "# HELP node_port_speedtest_bps Реальная скорость порта по замеру iperf3"
+  echo "# TYPE node_port_speedtest_bps gauge"
+  printf 'node_port_speedtest_bps %.0f\n' "$down"
+  echo "# HELP node_port_speedtest_upload_bps Скорость отдачи по замеру iperf3"
+  echo "# TYPE node_port_speedtest_upload_bps gauge"
+  printf 'node_port_speedtest_upload_bps %.0f\n' "$up"
+  echo "# HELP node_port_speed_expected_bps Скорость порта, заявленная хостером"
+  echo "# TYPE node_port_speed_expected_bps gauge"
+  echo "node_port_speed_expected_bps ${EXPECTED_BPS}"
+  echo "# HELP node_port_speedtest_timestamp_seconds Время последнего замера"
+  echo "# TYPE node_port_speedtest_timestamp_seconds gauge"
+  echo "node_port_speedtest_timestamp_seconds $(date +%s)"
+} > "$TMP"
+
+# Только атомарная подмена: без неё exporter периодически читает
+# полуписаный файл и ломает серию.
+mv "$TMP" "$OUT"

@@ -1,0 +1,50 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: bot
+  # Группируем по ноде: если у хостера ляжет аплинк, придёт одно сообщение
+  # на ноду, а не сорок отдельных.
+  group_by: [node, alertname]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+  routes:
+    # Сторож ходит отдельным маршрутом и редко.
+    - receiver: bot-watchdog
+      matchers: [severity = "watchdog"]
+      group_wait: 0s
+      group_interval: 15m
+      repeat_interval: 15m
+
+    - receiver: bot
+      matchers: [severity = "critical"]
+      group_wait: 10s
+      repeat_interval: 1h
+
+# Подавление шума: если сервер лёг целиком, нет смысла отдельно сообщать,
+# что на нём кончился процессор и пропал агент.
+inhibit_rules:
+  - source_matchers: [alertname = "NodeDown"]
+    target_matchers: [severity =~ "warning|info"]
+    equal: [node]
+
+  - source_matchers: [alertname = "NodeDown"]
+    target_matchers: [alertname =~ "ExporterDown|PanelLostNodeButHostAlive|NodeBlockedFromRussia|XrayPortUnreachableFromRussia"]
+    equal: [node]
+
+  - source_matchers: [alertname = "NodeBlockedFromRussia"]
+    target_matchers: [alertname = "XrayPortUnreachableFromRussia"]
+    equal: [node]
+
+receivers:
+  - name: bot
+    webhook_configs:
+      - url: http://bot:8080/alerts
+        send_resolved: true
+
+  - name: bot-watchdog
+    webhook_configs:
+      - url: http://bot:8080/watchdog
+        send_resolved: false

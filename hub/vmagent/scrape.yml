@@ -1,0 +1,94 @@
+global:
+  scrape_interval: 30s
+  scrape_timeout: 10s
+
+scrape_configs:
+
+  # ── 1. Железо нод: CPU, RAM, диск, сеть, результаты speedtest ───────────
+  - job_name: node
+    file_sd_configs:
+      - files: [/etc/targets/nodes.yml]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+
+  # ── 2. Метрики самой панели Remnawave ───────────────────────────────────
+  #     Адрес правится под вашу установку (приватный IP панели + METRICS_PORT).
+  - job_name: remnawave
+    metrics_path: /metrics
+    basic_auth:
+      username: metrics
+      password_file: /etc/secrets/panel_metrics_password
+    static_configs:
+      - targets: ["PANEL_PRIVATE_IP:3001"]
+        labels:
+          service: remnawave-panel
+    metric_relabel_configs:
+      # Панель называет ноду в лейбле node_name, у node_exporter это node.
+      # Приводим к общему знаменателю, чтобы метрики можно было джойнить.
+      - source_labels: [node_name]
+        target_label: node
+        regex: (.+)
+
+  # ── 3. Доступность нод с двух точек обзора ──────────────────────────────
+  #     Разница между ними и есть диагноз "жив, но зарезан ТСПУ".
+  - job_name: probe_nl
+    metrics_path: /probe
+    params:
+      module: [icmp]
+    file_sd_configs:
+      - files: [/etc/targets/nodes.yml]
+    relabel_configs:
+      - source_labels: [public_ip]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
+      - target_label: vantage
+        replacement: nl
+
+  - job_name: probe_ru
+    metrics_path: /probe
+    params:
+      module: [icmp]
+    file_sd_configs:
+      - files: [/etc/targets/nodes.yml]
+    relabel_configs:
+      - source_labels: [public_ip]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      # Пробник на сервере панели, доступен по приватной сети.
+      - target_label: __address__
+        replacement: RU_PROBER_PRIVATE_IP:9115
+      - target_label: vantage
+        replacement: ru
+
+  # ── 4. Проверка TCP-порта, на котором реально слушает xray ──────────────
+  - job_name: probe_ru_tcp
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    file_sd_configs:
+      - files: [/etc/targets/nodes.yml]
+    relabel_configs:
+      - source_labels: [public_ip, xray_port]
+        separator: ":"
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: RU_PROBER_PRIVATE_IP:9115
+      - target_label: vantage
+        replacement: ru
+
+  # ── 5. Сам мониторинг ───────────────────────────────────────────────────
+  - job_name: self
+    static_configs:
+      - targets:
+          - vmagent:8429
+          - victoriametrics:8428
+          - vmalert:8880
+          - alertmanager:9093
+          - blackbox:9115

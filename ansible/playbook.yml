@@ -1,0 +1,10 @@
+# Раскатка агента на ноды. Идемпотентна: гонять можно сколько угодно раз.
+#   ansible-playbook -i inventory.yml playbook.yml
+#   ansible-playbook -i inventory.yml playbook.yml --limit nl-3   # одна нода
+- name: Агент мониторинга на нодах Remnawave
+  hosts: nodes
+  become: true
+  roles:
+    - common
+    - node_exporter
+    - speedtest

@@ -1,0 +1,13 @@
+# Копия конфига из hub/blackbox — здесь на случай, если пробник
+# разворачивается отдельно от репозитория.
+modules:
+  icmp:
+    prober: icmp
+    timeout: 5s
+    icmp:
+      preferred_ip_protocol: ip4
+  tcp_connect:
+    prober: tcp
+    timeout: 5s
+    tcp:
+      preferred_ip_protocol: ip4

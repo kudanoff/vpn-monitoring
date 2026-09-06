@@ -1,0 +1,18 @@
+# Скопируйте в inventory.yml и впишите свои ноды.
+all:
+  vars:
+    ansible_user: root
+    ansible_python_interpreter: /usr/bin/python3
+    # Приватный IP хаба — сюда ноды шлют iperf3 и отсюда их скрейпят
+    hub_private_ip: "100.64.0.1"
+    tailscale_authkey: "tskey-auth-..."
+
+  children:
+    nodes:
+      hosts:
+        nl-1:
+          ansible_host: 203.0.113.11
+          link_mbit: 1000
+        de-1:
+          ansible_host: 203.0.113.12
+          link_mbit: 1000

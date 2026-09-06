@@ -1,0 +1,80 @@
+groups:
+
+# ─────────────────────────────────────────────────────────────────────────
+# Доступность: кто именно умер и надо ли ехать
+# ─────────────────────────────────────────────────────────────────────────
+- name: availability
+  interval: 30s
+  rules:
+
+  # Агент молчит И нода не пингуется ниоткуда — сервер действительно лёг.
+  - alert: NodeDown
+    expr: |
+      up{job="node"} == 0
+        and on(node) (max by(node) (probe_success{job=~"probe_.*"}) == 0)
+    for: 3m
+    labels:
+      severity: critical
+      action: "поднимать сервер / писать хостеру"
+    annotations:
+      summary: "🔴 {{ $labels.node }} — сервер недоступен"
+      description: "Не отвечает ни агент, ни ICMP ни из одной локации. Хостер: {{ $labels.hoster }}."
+
+  # Ключевое правило: нода жива и пингуется из NL, но не из РФ.
+  # Почти всегда это блокировка IP по ТСПУ, а не авария сервера.
+  - alert: NodeBlockedFromRussia
+    expr: |
+      probe_success{vantage="ru", job="probe_ru"} == 0
+        and on(node) probe_success{vantage="nl"} == 1
+    for: 5m
+    labels:
+      severity: critical
+      action: "менять IP, сервер трогать не нужно"
+    annotations:
+      summary: "🚧 {{ $labels.node }} — недоступна из РФ, но жива"
+      description: "Из NL пингуется, из РФ нет. Похоже на блокировку {{ $labels.public_ip }} по ТСПУ."
+
+  # Сервер и сеть в порядке, но порт xray из РФ не открывается —
+  # либо зарезан именно порт, либо xray не слушает.
+  - alert: XrayPortUnreachableFromRussia
+    expr: |
+      probe_success{job="probe_ru_tcp"} == 0
+        and on(node) probe_success{job="probe_ru", vantage="ru"} == 1
+    for: 5m
+    labels:
+      severity: warning
+      action: "проверить xray на ноде / блокировку порта"
+    annotations:
+      summary: "⚠️ {{ $labels.node }} — ICMP из РФ идёт, порт {{ $labels.xray_port }} нет"
+
+  # Агент жив, значит железо в порядке — проблема в xray или в линке до панели.
+  - alert: PanelLostNodeButHostAlive
+    expr: |
+      remnawave_node_status == 0 and on(node) up{job="node"} == 1
+    for: 3m
+    labels:
+      severity: warning
+      action: "перезапустить контейнер ноды, ехать не нужно"
+    annotations:
+      summary: "🟡 {{ $labels.node }} — панель потеряла ноду, сервер жив"
+
+  # Пропал сам агент, но сервер пингуется: упал node_exporter или Tailscale.
+  - alert: ExporterDown
+    expr: |
+      up{job="node"} == 0
+        and on(node) (max by(node) (probe_success{vantage="nl"}) == 1)
+    for: 10m
+    labels:
+      severity: info
+      action: "чинится само перезапуском агента, не срочно"
+    annotations:
+      summary: "ℹ️ {{ $labels.node }} — не отвечает агент мониторинга (сервер жив)"
+
+  # Мониторинг мониторинга. Если это перестало приходить в бот —
+  # значит умер сам хаб, и тишина в чате больше ничего не означает.
+  - alert: Watchdog
+    expr: vector(1)
+    labels:
+      severity: watchdog
+    annotations:
+      summary: "Хаб мониторинга жив"

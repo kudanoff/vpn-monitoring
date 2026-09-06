@@ -1,0 +1,24 @@
+[Unit]
+Description=Prometheus node_exporter
+After=network-online.target tailscaled.service
+
+[Service]
+User=node_exporter
+Type=simple
+# Слушаем ТОЛЬКО в приватной сети. Наружу node_exporter отдаёт
+# полный инвентарь хоста — в интернете ему делать нечего.
+ExecStart=/usr/local/bin/node_exporter \
+  --web.listen-address={{ private_ip.stdout | default('127.0.0.1') }}:9100 \
+  --collector.textfile.directory=/var/lib/node_exporter/textfile \
+  --collector.systemd \
+  --no-collector.wifi --no-collector.infiniband --no-collector.nfs
+
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/node_exporter
+
+[Install]
+WantedBy=multi-user.target

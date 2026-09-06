@@ -1,0 +1,76 @@
+groups:
+
+# ─────────────────────────────────────────────────────────────────────────
+# Канал: загрузка, качество, реальная скорость порта
+# ─────────────────────────────────────────────────────────────────────────
+- name: network
+  interval: 30s
+  rules:
+
+  # Основной интерфейс: отбрасываем loopback, docker, wireguard, tailscale.
+  - record: node:net_rx:bps
+    expr: |
+      sum by(node) (rate(node_network_receive_bytes_total{
+        device!~"lo|veth.*|docker.*|br-.*|wg.*|tailscale.*"}[5m])) * 8
+
+  - record: node:net_tx:bps
+    expr: |
+      sum by(node) (rate(node_network_transmit_bytes_total{
+        device!~"lo|veth.*|docker.*|br-.*|wg.*|tailscale.*"}[5m])) * 8
+
+  # p95 за сутки — именно по этой цифре хостеры выставляют счёт
+  # и именно она показывает реальный потолок, а не среднее.
+  - record: node:net_tx:p95_24h
+    expr: quantile_over_time(0.95, node:net_tx:bps[24h:5m])
+
+  # Ёмкость берём у самой сетевой карты — не надо руками держать её в конфиге.
+  - record: node:link_capacity:bps
+    expr: |
+      max by(node) (node_network_speed_bytes{
+        device!~"lo|veth.*|docker.*|br-.*|wg.*|tailscale.*"}) * 8
+
+  - alert: ChannelSaturated
+    expr: node:net_tx:bps / on(node) node:link_capacity:bps > 0.85
+    for: 15m
+    labels: {severity: warning}
+    annotations:
+      summary: "📡 {{ $labels.node }} — канал загружен более чем на 85%"
+
+  # Растущие дропы на сетевой карте — ранний признак упирания в полку,
+  # виден задолго до того, как начнут жаловаться клиенты.
+  - alert: NetworkErrors
+    expr: |
+      sum by(node) (rate(node_network_receive_drop_total{device!~"lo|veth.*|docker.*"}[10m])
+                  + rate(node_network_transmit_drop_total{device!~"lo|veth.*|docker.*"}[10m])) > 50
+    for: 15m
+    labels: {severity: warning}
+    annotations:
+      summary: "📉 {{ $labels.node }} — {{ $value | printf \"%.0f\" }} дропов/с на интерфейсе"
+
+  # Хостер молча перевёл порт с гигабита на что-то поменьше.
+  - alert: LinkSpeedChanged
+    expr: |
+      changes(node_network_speed_bytes{device!~"lo|veth.*|docker.*|wg.*|tailscale.*"}[1h]) > 0
+    labels: {severity: warning}
+    annotations:
+      summary: "🔌 {{ $labels.node }} — сменилась скорость линка на {{ $labels.device }}"
+
+  # Реальный замер iperf3 сильно ниже заявленного хостером.
+  - alert: PortSpeedDegraded
+    expr: |
+      node_port_speedtest_bps > 0
+        and node_port_speedtest_bps < 0.5 * on(node) group_left() (node_port_speed_expected_bps)
+    for: 10m
+    labels:
+      severity: warning
+      action: "тикет хостеру с цифрами из графика"
+    annotations:
+      summary: "🐢 {{ $labels.node }} — реальная скорость порта вдвое ниже заявленной"
+
+  # Замеры перестали приходить — сломался скрипт или cron на ноде.
+  - alert: SpeedtestStale
+    expr: time() - node_port_speedtest_timestamp_seconds > 24 * 3600
+    for: 1h
+    labels: {severity: info}
+    annotations:
+      summary: "🕰 {{ $labels.node }} — замер скорости не обновлялся больше суток"

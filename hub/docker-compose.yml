@@ -1,0 +1,112 @@
+# Хаб мониторинга. Всё состояние живёт в ./data — перенос на другой сервер
+# это rsync каталога целиком + docker compose up -d. Подробности в README.md.
+name: vpnmon
+
+x-restart: &restart
+  restart: unless-stopped
+
+services:
+  victoriametrics:
+    <<: *restart
+    image: victoriametrics/victoria-metrics:v1.111.0
+    command:
+      - -storageDataPath=/storage
+      - -retentionPeriod=${RETENTION:-12}
+      - -httpListenAddr=:8428
+      - -memory.allowedPercent=60
+    volumes:
+      - ./data/victoriametrics:/storage
+    networks: [mon]
+
+  vmagent:
+    <<: *restart
+    image: victoriametrics/vmagent:v1.111.0
+    command:
+      - -promscrape.config=/etc/vmagent/scrape.yml
+      - -remoteWrite.url=http://victoriametrics:8428/api/v1/write
+      - -remoteWrite.tmpDataPath=/tmpdata
+      - -promscrape.configCheckInterval=30s
+    volumes:
+      - ./vmagent/scrape.yml:/etc/vmagent/scrape.yml:ro
+      - ../targets:/etc/targets:ro
+      - ./secrets:/etc/secrets:ro
+      - ./data/vmagent:/tmpdata
+    depends_on: [victoriametrics]
+    networks: [mon]
+
+  vmalert:
+    <<: *restart
+    image: victoriametrics/vmalert:v1.111.0
+    command:
+      - -rule=/etc/rules/*.yml
+      - -datasource.url=http://victoriametrics:8428
+      - -remoteWrite.url=http://victoriametrics:8428
+      - -remoteRead.url=http://victoriametrics:8428
+      - -notifier.url=http://alertmanager:9093
+      - -evaluationInterval=30s
+      - -external.label=hub=${HUB_NAME:-nl}
+    volumes:
+      - ./vmalert/rules:/etc/rules:ro
+    depends_on: [victoriametrics, alertmanager]
+    networks: [mon]
+
+  alertmanager:
+    <<: *restart
+    image: prom/alertmanager:v0.28.1
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/data
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./data/alertmanager:/data
+    networks: [mon]
+
+  blackbox:
+    <<: *restart
+    image: prom/blackbox-exporter:v0.27.0
+    command: [--config.file=/etc/blackbox/blackbox.yml]
+    volumes:
+      - ./blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    # ICMP из контейнера требует этой capability
+    cap_add: [NET_RAW]
+    networks: [mon]
+
+  iperf3:
+    <<: *restart
+    image: networkstatic/iperf3:latest
+    command: [-s]
+    # Рефлектор для замеров скорости с нод. Только приватная сеть.
+    ports:
+      - "${HUB_PRIVATE_IP:-127.0.0.1}:5201:5201"
+    networks: [mon]
+
+  bot:
+    <<: *restart
+    build: ./bot
+    env_file: [.env]
+    environment:
+      VM_URL: http://victoriametrics:8428
+      ALERTMANAGER_URL: http://alertmanager:9093
+    ports:
+      # Наружу не торчит: слушаем только на приватном интерфейсе,
+      # сюда стучится Remnawave своими вебхуками.
+      - "${HUB_PRIVATE_IP:-127.0.0.1}:8080:8080"
+    depends_on: [victoriametrics, alertmanager]
+    networks: [mon]
+
+  grafana:
+    <<: *restart
+    image: grafana/grafana:11.6.1
+    profiles: [grafana]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./data/grafana:/var/lib/grafana
+    ports:
+      - "${HUB_PRIVATE_IP:-127.0.0.1}:3000:3000"
+    networks: [mon]
+
+networks:
+  mon: {}

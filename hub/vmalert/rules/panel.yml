@@ -1,0 +1,97 @@
+groups:
+
+# ─────────────────────────────────────────────────────────────────────────
+# Метрики, которые панель собирает с нод сама.
+#
+# Их достаточно, чтобы запуститься не трогая ноды вообще. Единственное, чего
+# они принципиально не могут: сказать, жив ли сервер, когда связь с панелью
+# порвалась — метрики приходят через ту же связь и просто исчезают вместе
+# с ней. За этим — node_exporter, второй этап.
+# ─────────────────────────────────────────────────────────────────────────
+- name: panel_derived
+  interval: 30s
+  rules:
+
+  # Панель знает ноды только по UUID. Имя берём из basic_info — так список
+  # нод не нужно вести руками: появилась нода в панели, появилась в боте.
+  - record: node:name_map
+    expr: max by(node_uuid, node) (label_replace(remnawave_node_basic_info, "node", "$1", "node_name", "(.+)"))
+
+  - record: node:panel_status
+    expr: max by(node) (remnawave_node_status * on(node_uuid) group_left(node) node:name_map)
+
+  - record: node:panel_users
+    expr: max by(node) (remnawave_node_online_users * on(node_uuid) group_left(node) node:name_map)
+
+  - record: node:panel_uptime
+    expr: max by(node) (remnawave_node_uptime_seconds * on(node_uuid) group_left(node) node:name_map)
+
+  # Загрузка процессора: load average, поделённый на число ядер.
+  # Это не то же самое, что busy% у node_exporter, но для "нода задыхается"
+  # показатель даже честнее — учитывает очередь на ввод-вывод.
+  - record: node:panel_cpu
+    expr: |
+      max by(node) (
+        (
+          max by(node_uuid) ({__name__=~"remnawave_node_cpu_load_avg_1.*"})
+            / on(node_uuid) group_left() max by(node_uuid) (remnawave_node_cpu_count)
+        ) * on(node_uuid) group_left(node) node:name_map
+      )
+
+  - record: node:panel_mem
+    expr: |
+      max by(node) (
+        (
+          1 - remnawave_node_memory_free_bytes / on(node_uuid) group_left()
+              remnawave_node_memory_total_bytes
+        ) * on(node_uuid) group_left(node) node:name_map
+      )
+
+  - record: node:panel_rx
+    expr: max by(node) (remnawave_node_network_rx_bytes_per_sec * 8 * on(node_uuid) group_left(node) node:name_map)
+
+  - record: node:panel_tx
+    expr: max by(node) (remnawave_node_network_tx_bytes_per_sec * 8 * on(node_uuid) group_left(node) node:name_map)
+
+  # p95 за сутки — цифра, по которой хостеры считают деньги и по которой
+  # видно реальный потолок канала, а не среднее.
+  - record: node:panel_tx_p95_24h
+    expr: quantile_over_time(0.95, node:panel_tx[24h:5m])
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Алерты первого этапа: работают только на метриках панели
+# ─────────────────────────────────────────────────────────────────────────
+- name: panel_alerts
+  interval: 30s
+  rules:
+
+  - alert: PanelHighCPU
+    expr: node:panel_cpu > 0.90
+    for: 15m
+    labels: {severity: warning}
+    annotations:
+      summary: "🔥 {{ $labels.node }} — процессор загружен на {{ $value | humanizePercentage }}"
+
+  - alert: PanelHighMemory
+    expr: node:panel_mem > 0.92
+    for: 15m
+    labels: {severity: warning}
+    annotations:
+      summary: "🧠 {{ $labels.node }} — память занята на {{ $value | humanizePercentage }}"
+
+  # Нода перезагрузилась. Само по себе не авария, но если это повторяется —
+  # верный признак, что с сервером что-то не так.
+  - alert: NodeRebooted
+    expr: node:panel_uptime < 600 and node:panel_uptime offset 10m > 600
+    labels: {severity: info}
+    annotations:
+      summary: "🔄 {{ $labels.node }} — сервер перезагрузился"
+
+  # Панель перестала отдавать метрики по ноде вообще.
+  - alert: PanelNodeMetricsMissing
+    expr: absent_over_time(node:panel_status[10m]) == 1
+    for: 5m
+    labels: {severity: warning}
+    annotations:
+      summary: "❓ Панель перестала отдавать метрики по нодам"

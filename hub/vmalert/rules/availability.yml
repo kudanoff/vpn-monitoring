@@ -3,28 +3,6 @@ groups:
 # ─────────────────────────────────────────────────────────────────────────
 # Доступность: кто именно умер и надо ли ехать
 # ─────────────────────────────────────────────────────────────────────────
-# Панель знает ноды по UUID, node_exporter — по имени. Общий язык им даёт
-# targets/nodes.yml: там у каждой ноды есть и node, и node_uuid, и оба лейбла
-# автоматически попадают на все метрики job=node. Отсюда — таблица соответствия.
-- name: mapping
-  interval: 30s
-  rules:
-
-  - record: node:uuid_map
-    expr: max by(node, node_uuid, public_ip, hoster) (up{job="node"})
-
-  - record: node:panel_status
-    expr: |
-      max by(node) (
-        remnawave_node_status * on(node_uuid) group_left(node) node:uuid_map
-      )
-
-  - record: node:panel_users
-    expr: |
-      max by(node) (
-        remnawave_node_online_users * on(node_uuid) group_left(node) node:uuid_map
-      )
-
 - name: availability
   interval: 30s
   rules:

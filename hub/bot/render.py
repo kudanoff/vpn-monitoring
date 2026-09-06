@@ -24,6 +24,13 @@ def uptime(seconds: float | None) -> str:
 
 def node_icon(state: dict) -> str:
     """Иконка отражает диагноз, а не просто факт недоступности."""
+    # Пока агента нет, "up" отсутствует — это не повод считать ноду упавшей.
+    if state.get("up") is None:
+        if state.get("probe_nl") == 0:
+            return "🔴"
+        if state.get("probe_ru") == 0:
+            return "🚧"
+        return "🟢" if state.get("panel") != 0 else "🟡"
     if state.get("up") == 0 and state.get("probe_nl") == 0:
         return "🔴"          # сервер лёг
     if state.get("probe_ru") == 0 and state.get("probe_nl") == 1:
@@ -35,7 +42,11 @@ def node_icon(state: dict) -> str:
     return "🟢"
 
 
-LEGEND = "🟢 норма  🟡 нет связи с панелью  🚧 не видно из РФ  🔴 сервер лёг  ⚪️ нет агента"
+LEGEND = (
+    "🟢 норма  🟡 нет связи с панелью  🚧 не видно из РФ  "
+    "🔴 сервер лёг  ⚪️ нет агента\n"
+    "📋 — цифры со слов панели, агент на ноде не раскатан"
+)
 
 
 def status_table(nodes: dict[str, dict]) -> str:
@@ -50,6 +61,7 @@ def status_table(nodes: dict[str, dict]) -> str:
             f"    ЦП {pct(s.get('cpu'))} · ОЗУ {pct(s.get('mem'))} · "
             f"↑{bps(s.get('tx'))} ↓{bps(s.get('rx'))}"
             + (f" · 👥 {int(s['users'])}" if s.get("users") is not None else "")
+            + ("  ·  📋" if s.get("from_panel") else "")
         )
     lines += ["", f"<i>{LEGEND}</i>"]
     return "\n".join(lines)
@@ -68,7 +80,9 @@ def node_card(name: str, s: dict) -> str:
         f"  из РФ: {ru}\n"
         f"  порт xray из РФ: {port}\n"
         f"  панель видит ноду: {'да' if s.get('panel') == 1 else 'нет'}\n\n"
-        f"<b>Ресурсы</b>\n"
+        + ("<i>данные со слов панели — агент на ноде не раскатан</i>\n\n"
+           if s.get("from_panel") else "")
+        + f"<b>Ресурсы</b>\n"
         f"  ЦП: {pct(s.get('cpu'))}   steal: {pct(s.get('steal'))}\n"
         f"  ОЗУ: {pct(s.get('mem'))}\n"
         f"  аптайм: {uptime(s.get('uptime'))}\n\n"

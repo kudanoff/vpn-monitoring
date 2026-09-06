@@ -42,6 +42,9 @@ dp = Dispatcher()
 # Сбор картины по всем нодам
 # ─────────────────────────────────────────────────────────────────────────
 
+# Панель и агент дополняют друг друга: панель отдаёт данные по всем нодам
+# сразу, агент — точнее и независимо. Где есть агент, берём его; где нет,
+# показываем то, что знает панель. Поэтому у большинства полей два запроса.
 QUERIES = {
     "up":        'max by(node) (up{job="node"})',
     "probe_nl":  'max by(node) (probe_success{vantage="nl"})',
@@ -49,18 +52,36 @@ QUERIES = {
     "tcp_ru":    'max by(node) (probe_success{job="probe_ru_tcp"})',
     "panel":     "node:panel_status",
     "users":     "node:panel_users",
+    # Агент, если раскатан
     "cpu":       "max by(node) (node:cpu_busy:ratio)",
     "mem":       "max by(node) (node:mem_used:ratio)",
     "rx":        "max by(node) (node:net_rx:bps)",
     "tx":        "max by(node) (node:net_tx:bps)",
+    # Панель — источник по умолчанию
+    "cpu_panel": "node:panel_cpu",
+    "mem_panel": "node:panel_mem",
+    "rx_panel":  "node:panel_rx",
+    "tx_panel":  "node:panel_tx",
 }
 
 DETAIL_QUERIES = {
     "steal":     'avg by(node) (rate(node_cpu_seconds_total{mode="steal"}[10m]))',
     "uptime":    "max by(node) (time() - node_boot_time_seconds)",
+    "uptime_panel": "node:panel_uptime",
     "p95":       "max by(node) (node:net_tx:p95_24h)",
+    "p95_panel": "node:panel_tx_p95_24h",
     "link":      "max by(node) (node:link_capacity:bps)",
     "speedtest": "max by(node) (node_port_speedtest_bps)",
+}
+
+# Что чем подменяется, если агента на ноде ещё нет.
+FALLBACKS = {
+    "cpu": "cpu_panel",
+    "mem": "mem_panel",
+    "rx": "rx_panel",
+    "tx": "tx_panel",
+    "uptime": "uptime_panel",
+    "p95": "p95_panel",
 }
 
 
@@ -77,6 +98,14 @@ async def collect(session: aiohttp.ClientSession, detailed: bool = False) -> dic
             continue
         for name, value in result.items():
             nodes.setdefault(name, {})[key] = value
+
+    # Где агента нет — показываем цифры панели, но помечаем это,
+    # чтобы по боту было видно, какие ноды ещё не раскатаны.
+    for state in nodes.values():
+        for field, source in FALLBACKS.items():
+            if state.get(field) is None and state.get(source) is not None:
+                state[field] = state[source]
+                state.setdefault("from_panel", set()).add(field)
 
     # Ноды, которые есть в конфиге, но ещё ни разу не отдали метрик,
     # всё равно должны быть видны — иначе пропажу легко не заметить.

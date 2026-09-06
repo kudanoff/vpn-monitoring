@@ -13,7 +13,8 @@ scrape_configs:
         target_label: instance
 
   # ── 2. Метрики самой панели Remnawave ───────────────────────────────────
-  #     Адрес правится под вашу установку (приватный IP панели + METRICS_PORT).
+  #     Адреса берутся из .env, а не правятся в этом файле: иначе первый же
+  #     git pull затирает локальную правку, и скрейпы молча отваливаются.
   - job_name: remnawave
     metrics_path: /metrics
     basic_auth:
@@ -22,7 +23,7 @@ scrape_configs:
       username_file: /etc/secrets/panel_metrics_user
       password_file: /etc/secrets/panel_metrics_password
     static_configs:
-      - targets: ["PANEL_PRIVATE_IP:3001"]
+      - targets: ["%{PANEL_ADDR}"]
         labels:
           service: remnawave-panel
     metric_relabel_configs:
@@ -63,7 +64,7 @@ scrape_configs:
         target_label: instance
       # Пробник на сервере панели, доступен по приватной сети.
       - target_label: __address__
-        replacement: RU_PROBER_PRIVATE_IP:9115
+        replacement: "%{RU_PROBER_ADDR}"
       - target_label: vantage
         replacement: ru
 
@@ -81,7 +82,7 @@ scrape_configs:
       - source_labels: [__param_target]
         target_label: instance
       - target_label: __address__
-        replacement: RU_PROBER_PRIVATE_IP:9115
+        replacement: "%{RU_PROBER_ADDR}"
       - target_label: vantage
         replacement: ru
 

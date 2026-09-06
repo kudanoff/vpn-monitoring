@@ -21,6 +21,9 @@ services:
   vmagent:
     <<: *restart
     image: victoriametrics/vmagent:v1.111.0
+    # Адреса панели и пробника подставляются в scrape.yml из .env
+    # плейсхолдерами %{...} — сам конфиг остаётся неизменным под гитом.
+    env_file: [.env]
     command:
       - -promscrape.config=/etc/vmagent/scrape.yml
       - -remoteWrite.url=http://victoriametrics:8428/api/v1/write

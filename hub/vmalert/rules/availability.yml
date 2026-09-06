@@ -58,7 +58,7 @@ groups:
     annotations:
       summary: "🟡 {{ $labels.node }} — панель потеряла ноду, сервер жив"
 
-  # Пропал сам агент, но сервер пингуется: упал node_exporter или Tailscale.
+  # Пропал сам агент, но сервер пингуется: упал node_exporter или туннель.
   - alert: ExporterDown
     expr: |
       up{job="node"} == 0

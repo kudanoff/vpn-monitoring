@@ -7,16 +7,16 @@ groups:
   interval: 30s
   rules:
 
-  # Основной интерфейс: отбрасываем loopback, docker, wireguard, tailscale.
+  # Основной интерфейс: отбрасываем loopback, docker и туннели.
   - record: node:net_rx:bps
     expr: |
       sum by(node) (rate(node_network_receive_bytes_total{
-        device!~"lo|veth.*|docker.*|br-.*|wg.*|tailscale.*"}[5m])) * 8
+        device!~"lo|veth.*|docker.*|br-.*|wg.*"}[5m])) * 8
 
   - record: node:net_tx:bps
     expr: |
       sum by(node) (rate(node_network_transmit_bytes_total{
-        device!~"lo|veth.*|docker.*|br-.*|wg.*|tailscale.*"}[5m])) * 8
+        device!~"lo|veth.*|docker.*|br-.*|wg.*"}[5m])) * 8
 
   # p95 за сутки — именно по этой цифре хостеры выставляют счёт
   # и именно она показывает реальный потолок, а не среднее.
@@ -27,7 +27,7 @@ groups:
   - record: node:link_capacity:bps
     expr: |
       max by(node) (node_network_speed_bytes{
-        device!~"lo|veth.*|docker.*|br-.*|wg.*|tailscale.*"}) * 8
+        device!~"lo|veth.*|docker.*|br-.*|wg.*"}) * 8
 
   - alert: ChannelSaturated
     expr: node:net_tx:bps / on(node) node:link_capacity:bps > 0.85
@@ -50,7 +50,7 @@ groups:
   # Хостер молча перевёл порт с гигабита на что-то поменьше.
   - alert: LinkSpeedChanged
     expr: |
-      changes(node_network_speed_bytes{device!~"lo|veth.*|docker.*|wg.*|tailscale.*"}[1h]) > 0
+      changes(node_network_speed_bytes{device!~"lo|veth.*|docker.*|wg.*"}[1h]) > 0
     labels: {severity: warning}
     annotations:
       summary: "🔌 {{ $labels.node }} — сменилась скорость линка на {{ $labels.device }}"

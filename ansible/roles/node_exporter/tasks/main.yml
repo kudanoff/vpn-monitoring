@@ -28,9 +28,11 @@
   notify: restart node_exporter
 
 - name: Определить адрес в приватной сети
-  ansible.builtin.shell: tailscale ip -4 2>/dev/null | head -1
+  ansible.builtin.shell: |
+    ip -4 -o addr show wg0 2>/dev/null | awk '{print $4}' | cut -d/ -f1
   register: private_ip
   changed_when: false
+  failed_when: private_ip.stdout | length == 0
 
 - name: Юнит systemd
   ansible.builtin.template:

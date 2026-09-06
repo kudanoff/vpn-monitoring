@@ -1,0 +1,21 @@
+- name: WireGuard
+  ansible.builtin.apt:
+    name: [wireguard-tools]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Конфиг клиента
+  # Файл кладётся сюда скриптом wg-add-peer.sh с хаба:
+  #   scp hub:/etc/wireguard/peers/<нода>.conf ansible/files/wg/
+  ansible.builtin.copy:
+    src: "wg/{{ inventory_hostname }}.conf"
+    dest: /etc/wireguard/wg0.conf
+    mode: "0600"
+  notify: restart wireguard
+
+- name: Включить туннель
+  ansible.builtin.systemd:
+    name: wg-quick@wg0
+    enabled: true
+    state: started

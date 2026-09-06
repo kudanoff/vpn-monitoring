@@ -18,7 +18,7 @@
 Из NL пингуется, из РФ нет → IP зарезан ТСПУ, сервер трогать не нужно.
 
 ```
-    ноды (node_exporter, только в приватной сети)
+    ноды (node_exporter, только в WireGuard-сети)
              │
              ▼
    ХАБ (дедик NL): vmagent → VictoriaMetrics → vmalert → Alertmanager → бот
@@ -41,6 +41,29 @@ targets/       список нод — единственный файл, кот
 
 ## Установка
 
+### 0. Приватная сеть
+
+Всё внутреннее общение идёт по WireGuard: хаб — сервер, панель и ноды — клиенты.
+Tailscale не используется намеренно: его сайт и управляющие серверы недоступны
+из РФ, а путь доставки алертов не должен зависеть от того, что могут заблокировать.
+
+На хабе один раз:
+
+```bash
+./scripts/wg-hub-init.sh <публичный_IP_хаба> 51820
+```
+
+Затем на каждого клиента:
+
+```bash
+./scripts/wg-add-peer.sh panel-ru 2     # сервер панели → 10.77.0.2
+./scripts/wg-add-peer.sh nl-1 11        # нода          → 10.77.0.11
+```
+
+Скрипт печатает готовый конфиг. Для панели — положить его в
+`/etc/wireguard/wg0.conf` и запустить `wg-quick@wg0`. Для нод — сложить файлы
+в `ansible/files/wg/<имя_ноды>.conf`, дальше их разложит `make deploy`.
+
 ### 1. Хаб (дедик NL)
 
 ```bash
@@ -49,8 +72,7 @@ cp .env.example .env && $EDITOR .env
 echo -n 'пароль_от_METRICS_PASS' > secrets/panel_metrics_password
 ```
 
-В `vmagent/scrape.yml` заменить два плейсхолдера: `PANEL_PRIVATE_IP` (адрес
-панели в Tailscale) и `RU_PROBER_PRIVATE_IP` (он же, порт 9115).
+В `vmagent/scrape.yml` заменить два плейсхолдера: `PANEL_PRIVATE_IP` (адрес панели в WireGuard, обычно 10.77.0.2) и `RU_PROBER_PRIVATE_IP` (он же, порт 9115).
 
 ```bash
 make up
@@ -59,7 +81,7 @@ make up
 ### 2. Пробник (сервер панели, РФ)
 
 ```bash
-cd prober && PROBER_PRIVATE_IP=$(tailscale ip -4) docker compose up -d
+cd prober && PROBER_PRIVATE_IP=10.77.0.2 docker compose up -d
 ```
 
 ### 3. Ноды
@@ -95,11 +117,10 @@ tar xzf vpnmon.tgz && cd vpn-monitoring/hub && docker compose up -d
 ```
 
 Если менялся приватный IP хаба — поправить `HUB_PRIVATE_IP` в `.env` и адрес
-вебхука в панели. Ноды править не нужно: они не знают про хаб ничего,
-кроме адреса рефлектора iperf3.
+вебхука в панели. На нодах поменяется только endpoint в `/etc/wireguard/wg0.conf`,
+если у нового хаба другой публичный IP.
 
-История метрик переносится вместе с `hub/data/victoriametrics`. Если она не
-нужна — исключите этот каталог и переезд станет мгновенным.
+История метрик переносится вместе с `hub/data/victoriametrics`. Если она не нужна — исключите этот каталог и переезд станет мгновенным.
 
 ## Команды бота
 

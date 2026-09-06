@@ -4,17 +4,3 @@
     state: present
     update_cache: true
     cache_valid_time: 3600
-
-- name: Установить Tailscale
-  ansible.builtin.shell: curl -fsSL https://tailscale.com/install.sh | sh
-  args:
-    creates: /usr/sbin/tailscaled
-
-- name: Подключить ноду к приватной сети
-  ansible.builtin.command: >
-    tailscale up --authkey={{ tailscale_authkey }}
-    --hostname={{ inventory_hostname }} --accept-routes
-  register: ts
-  changed_when: ts.rc == 0
-  failed_when: ts.rc != 0 and 'already' not in (ts.stderr | default(''))
-  when: tailscale_authkey is defined and tailscale_authkey | length > 0

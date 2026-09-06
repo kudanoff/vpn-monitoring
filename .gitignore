@@ -3,3 +3,4 @@ hub/data/
 hub/secrets/*
 !hub/secrets/.gitkeep
 ansible/inventory.yml
+.DB_Store

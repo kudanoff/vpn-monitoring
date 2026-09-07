@@ -45,7 +45,7 @@ groups:
       severity: warning
       action: "проверить xray на ноде / блокировку порта"
     annotations:
-      summary: "⚠️ {{ $labels.node }} — ICMP из РФ идёт, порт {{ $labels.xray_port }} нет"
+      summary: "⚠️ {{ $labels.node }} — ICMP из РФ идёт, а {{ $labels.tcp_target }} не отвечает"
 
   # Агент жив, значит железо в порядке — проблема в xray или в линке до панели.
   - alert: PanelLostNodeButHostAlive

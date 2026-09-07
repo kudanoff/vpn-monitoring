@@ -84,9 +84,14 @@ COUNT=$(echo "$NODES" | jq 'length')
     # кроме панели. Порт, на котором xray принимает клиентов, панель в
     # списке нод не отдаёт: берём из DEFAULT_XRAY_PORT или из overrides.
     | . as $n
-    | (($ov[$n.name] // $port)) as $xp
+    | ($ov[$n.name] // $port) as $xp
+    # Значение может быть портом (8443), парой хост:порт для нод за CDN
+    # или словом skip, чтобы не проверять порт вовсе.
+    | (if $xp == "skip" then ""
+       elif ($xp | test(":")) then $xp
+       else "\($n.address):\($xp)" end) as $target
     | "- targets: [\"\($n.address):9100\"]\n  labels:\n    node: \"\($n.name)\"\n    public_ip: \"\($n.address)\"\n"
-      + (if $xp == "skip" then "" else "    xray_port: \"\($xp)\"\n" end)
+      + (if $target == "" then "" else "    tcp_target: \"\($target)\"\n" end)
       + "    hoster: \"\($n.providerName // "")\"\n"
   '
 } > "$OUT.tmp"

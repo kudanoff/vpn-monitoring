@@ -79,13 +79,12 @@ scrape_configs:
     file_sd_configs:
       - files: [/etc/targets/nodes.yml]
     relabel_configs:
-      # Ноды без xray_port из проверки исключены: у них порт неизвестен
-      # или подключение идёт не напрямую (CDN, нестандартная схема).
-      - source_labels: [xray_port]
+      # Ноды без tcp_target из проверки исключены: порт неизвестен или
+      # проверять его бессмысленно (skip в port-overrides.conf).
+      - source_labels: [tcp_target]
         regex: ""
         action: drop
-      - source_labels: [public_ip, xray_port]
-        separator: ":"
+      - source_labels: [tcp_target]
         target_label: __param_target
       - source_labels: [__param_target]
         target_label: instance

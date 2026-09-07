@@ -10,11 +10,12 @@ set -euo pipefail
 
 CONF="${WATCHDOG_ENV:-/opt/vpnmon-watchdog/.env}"
 STATE="${WATCHDOG_STATE:-/opt/vpnmon-watchdog/state}"
-FAILS_BEFORE_ALERT=2          # два промаха подряд, чтобы не дёргаться на моргание сети
-REPEAT_EVERY=3600             # напоминать раз в час, пока не почините
-
 # shellcheck disable=SC1090
 source "$CONF"
+
+# Оба параметра можно переопределить в .env — например, на время проверок.
+FAILS_BEFORE_ALERT="${FAILS_BEFORE_ALERT:-2}"   # промахов подряд до тревоги
+REPEAT_EVERY="${REPEAT_EVERY:-3600}"            # как часто напоминать
 
 # Из России api.telegram.org заблокирован. Если на машине есть прокси,
 # укажите его в PROXY (например socks5h://127.0.0.1:1080) — тогда сторож
@@ -53,6 +54,21 @@ selftest() {
     "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" 2>&1
 }
 
+# Мгновенная проверка отправки: то же, что делает сторож при аварии,
+# только прямо сейчас и без ожидания. Проверяет прокси, токен и чат разом.
+if [[ "${1:-}" == "--test-notify" ]]; then
+  if notify "🧪 <b>Проверка сторожа</b>
+Сообщение отправлено вручную с $(hostname). Если вы это видите, при
+настоящей аварии тревога тоже дойдёт."; then
+    echo "Отправлено. Проверьте телеграм."
+  else
+    echo "Отправить не удалось. Причина в журнале:"
+    echo "  journalctl -t vpnmon-watchdog --since '-5m'"
+    exit 1
+  fi
+  exit 0
+fi
+
 if [[ "${1:-}" == "--selftest" ]]; then
   if selftest; then
     echo "Telegram доступен${PROXY:+ через прокси $PROXY}, сторож работоспособен."
@@ -75,10 +91,12 @@ fi
 
 fails=$((fails + 1))
 echo "$fails" > "$STATE.fails"
+logger -t vpnmon-watchdog "проверка не прошла (${fails}): $body"
 
 [[ "$fails" -lt "$FAILS_BEFORE_ALERT" ]] && exit 0
 
 if [[ "$prev_state" != "down" ]] || (( now - prev_notified >= REPEAT_EVERY )); then
+  logger -t vpnmon-watchdog "хаб не отвечает ${fails} раз подряд, шлю тревогу"
   notify "🚨 <b>Мониторинг не отвечает</b>
 Хаб не подтверждает сбор данных уже ${fails} проверки подряд.
 Пока это так, отсутствие алертов ничего не значит.

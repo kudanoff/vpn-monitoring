@@ -1,9 +1,16 @@
 .PHONY: up down logs restart deploy check backup
 
-up:            ## Поднять хаб (первый этап: метрики панели + пробники)
+up: prepare    ## Поднять хаб (первый этап: метрики панели + пробники)
 	cd hub && docker compose up -d --build
 
-up-nodes:      ## То же плюс рефлектор iperf3 — когда пойдёт второй этап
+prepare:       ## Создать каталоги данных с правильными владельцами
+	@mkdir -p hub/data/victoriametrics hub/data/vmagent hub/data/alertmanager hub/data/grafana
+	@# Alertmanager и Grafana работают не от root и иначе не могут писать
+	@# в свои каталоги: молча ломаются заглушки и подавление повторов.
+	-@chown -R 65534:65534 hub/data/alertmanager 2>/dev/null
+	-@chown -R 472:472 hub/data/grafana 2>/dev/null
+
+up-nodes: prepare ## То же плюс рефлектор iperf3 — когда пойдёт второй этап
 	cd hub && docker compose --profile nodes up -d --build
 
 down:

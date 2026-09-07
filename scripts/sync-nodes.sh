@@ -20,13 +20,29 @@ API_URL="$(read_env PANEL_API_URL)"
 [[ -n "$API_URL" ]] || { echo "задайте PANEL_API_URL в hub/.env (например https://panel.example.com)"; exit 1; }
 IGNORE="$(read_env NODES_IGNORE)"; IGNORE="${IGNORE:-archive|ipcheker}"
 XRAY_PORT="$(read_env DEFAULT_XRAY_PORT)"; XRAY_PORT="${XRAY_PORT:-443}"
+COOKIE="$(read_env PANEL_COOKIE)"
 TOKEN="$(tr -d '\n\r' < "$TOKEN_FILE")"
 
+# --http1.1 намеренно: панели за nginx нередко рвут HTTP/2-поток на API.
+CURL_ARGS=(--http1.1 -sS -H "Authorization: Bearer ${TOKEN}")
+# Кука защиты обратного прокси, если она включена в панели.
+[[ -n "$COOKIE" ]] && CURL_ARGS+=(-H "Cookie: ${COOKIE}")
+
 echo "Запрашиваю ноды у ${API_URL} ..."
-RAW=$(curl -fsS -H "Authorization: Bearer ${TOKEN}" "${API_URL%/}/api/nodes") || {
-  echo "API не ответил. Проверьте PANEL_API_URL, токен и доступность панели с хаба."
+BODY_FILE=$(mktemp)
+CODE=$(curl "${CURL_ARGS[@]}" -o "$BODY_FILE" -w '%{http_code}' "${API_URL%/}/api/nodes" || echo 000)
+RAW=$(cat "$BODY_FILE"); rm -f "$BODY_FILE"
+
+if [[ "$CODE" != "200" ]]; then
+  echo "API ответил кодом ${CODE}."
+  case "$CODE" in
+    000) echo "Соединение не установилось: проверьте PANEL_API_URL и доступность панели с хаба." ;;
+    401|403) echo "Не приняты доступы: проверьте токен в ${TOKEN_FILE} и PANEL_COOKIE в hub/.env." ;;
+    404) echo "Эндпоинт не найден: в вашей версии панели путь к списку нод может отличаться." ;;
+  esac
+  echo "Ответ:"; echo "$RAW" | head -c 400
   exit 1
-}
+fi
 
 # Разные версии панели заворачивают ответ по-разному: то массив, то объект
 # с полем nodes, то и вовсе без обёртки. Разбираем все три случая.

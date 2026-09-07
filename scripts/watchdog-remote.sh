@@ -16,6 +16,12 @@ REPEAT_EVERY=3600             # напоминать раз в час, пока 
 # shellcheck disable=SC1090
 source "$CONF"
 
+# Из России api.telegram.org заблокирован. Если на машине есть прокси,
+# укажите его в PROXY (например socks5h://127.0.0.1:1080) — тогда сторож
+# может жить и на сервере панели.
+CURL_PROXY=()
+[[ -n "${PROXY:-}" ]] && CURL_PROXY=(--proxy "$PROXY")
+
 now=$(date +%s)
 prev_state="ok"; prev_notified=0
 [[ -f "$STATE" ]] && read -r prev_state prev_notified < "$STATE" || true
@@ -26,7 +32,7 @@ notify() {
   # Молча проглоченная неудача отправки — худшее, что может сделать сторож:
   # он выглядит работающим, а сообщений нет. Пишем в системный журнал.
   local out
-  if out=$(curl -sS --max-time 20 -X POST \
+  if out=$(curl -sS --max-time 20 "${CURL_PROXY[@]}" -X POST \
       "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
       -d "chat_id=${TELEGRAM_CHAT_ID}" -d "parse_mode=HTML" \
       --data-urlencode "text=$1" 2>&1); then
@@ -43,16 +49,16 @@ notify() {
 # Проверка связи с Telegram при старте: из России api.telegram.org
 # заблокирован, и сторож там бесполезен — лучше знать об этом сразу.
 selftest() {
-  curl -sS --max-time 10 -o /dev/null \
+  curl -sS --max-time 10 "${CURL_PROXY[@]}" -o /dev/null \
     "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" 2>&1
 }
 
 if [[ "${1:-}" == "--selftest" ]]; then
   if selftest; then
-    echo "Telegram доступен, сторож на этой машине работоспособен."
+    echo "Telegram доступен${PROXY:+ через прокси $PROXY}, сторож работоспособен."
   else
-    echo "Telegram недоступен с этой машины — сторожу здесь не место."
-    echo "Перенесите его на сервер вне России."
+    echo "Telegram недоступен с этой машины."
+    echo "Либо укажите PROXY в .env, либо перенесите сторожа на сервер вне России."
     exit 1
   fi
   exit 0

@@ -68,7 +68,10 @@ def status_summary(nodes: dict[str, dict]) -> str:
     if not nodes:
         return "Пока нет данных. Проверьте, что метрики панели доезжают."
 
-    problems = {n: s for n, s in nodes.items() if node_icon(s) != "🟢"}
+    # Нераскатанный агент — не авария, а незаконченный второй этап.
+    # В список проблем такое не попадает, иначе весь парк выглядит сломанным.
+    problems = {n: s for n, s in nodes.items() if node_icon(s) not in ("🟢", "⚪️")}
+    no_agent = sum(1 for s in nodes.values() if node_icon(s) == "⚪️")
     ok_count = len(nodes) - len(problems)
 
     lines = [f"<b>Ноды: {len(nodes)}</b>", ""]
@@ -76,13 +79,15 @@ def status_summary(nodes: dict[str, dict]) -> str:
     users = sum(int(s["users"]) for s in nodes.values() if s.get("users"))
     traffic = sum(s.get("tx") or 0 for s in nodes.values())
     lines.append(f"🟢 в норме: {ok_count}    👥 онлайн: {users}    ↑ всего: {bps(traffic)}")
+    if no_agent:
+        lines.append(f"<i>без агента: {no_agent} — метрики со слов панели</i>")
 
     if not problems:
         lines += ["", "Проблем нет."]
     else:
         lines += ["", f"<b>Требуют внимания — {len(problems)}</b>", ""]
         # Сначала то, что горит ярче: упавшие, потом блокировки, потом остальное.
-        order = {"🔴": 0, "🚧": 1, "⚪️": 2, "🟡": 3}
+        order = {"🔴": 0, "🚧": 1, "🟡": 2}
         for name in sorted(problems, key=lambda n: (order.get(node_icon(problems[n]), 9), n)):
             lines.append(_line(name, problems[name]))
 

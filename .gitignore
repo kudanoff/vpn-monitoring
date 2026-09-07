@@ -4,3 +4,7 @@ hub/secrets/*
 !hub/secrets/.gitkeep
 ansible/inventory.yml
 .DB_Store
+# Генерируется скриптом sync-nodes.sh
+targets/nodes.yml
+# Настраивается под конкретную установку
+targets/port-overrides.conf

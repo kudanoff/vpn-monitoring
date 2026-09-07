@@ -22,6 +22,8 @@ IGNORE="$(read_env NODES_IGNORE)"; IGNORE="${IGNORE:-archive|ipcheker}"
 XRAY_PORT="$(read_env DEFAULT_XRAY_PORT)"; XRAY_PORT="${XRAY_PORT:-443}"
 COOKIE="$(read_env PANEL_COOKIE)"
 OVERRIDES="$ROOT/targets/port-overrides.conf"
+# Первый запуск: создаём файл исключений из образца, чтобы было что править.
+[[ -f "$OVERRIDES" ]] || cp "$ROOT/targets/port-overrides.conf.example" "$OVERRIDES" 2>/dev/null || true
 TOKEN="$(tr -d '\n\r' < "$TOKEN_FILE")"
 
 # --http1.1 намеренно: панели за nginx нередко рвут HTTP/2-поток на API.

@@ -264,9 +264,10 @@ async def cmd_unmute(message: Message, command: CommandObject) -> None:
 async def handle_alerts(request: web.Request) -> web.Response:
     """Алерты от Alertmanager."""
     payload = await request.json()
-    for alert in payload.get("alerts", []):
+    text = render.alert_group(payload)
+    if text:
         try:
-            await bot.send_message(CHAT_ID, render.alert_message(alert))
+            await bot.send_message(CHAT_ID, text)
         except Exception as exc:
             log.error("не отправился алерт: %s", exc)
     return web.Response(text="ok")

@@ -141,6 +141,39 @@ def node_card(name: str, s: dict) -> str:
     )
 
 
+def alert_group(payload: dict) -> str:
+    """
+    Одно сообщение на группу алертов. Двадцать четыре письма про одно и то же
+    событие читать никто не станет, а значит и аварию в них не разглядит.
+    """
+    alerts = payload.get("alerts", [])
+    if not alerts:
+        return ""
+    if len(alerts) == 1:
+        return alert_message(alerts[0])
+
+    resolved = all(a.get("status") == "resolved" for a in alerts)
+    first = alerts[0]
+    name = first.get("annotations", {}).get("summary", "")
+    # Из "🔴 sech — сервер недоступен" оставляем суть без имени ноды.
+    kind = name.split("—", 1)[1].strip() if "—" in name else first.get("labels", {}).get("alertname", "Алерт")
+    icon = name.strip()[:2] if name else "⚠️"
+
+    head = f"✅ <b>Восстановлено ({len(alerts)})</b>" if resolved else f"{icon} <b>{kind}</b> — нод: {len(alerts)}"
+    lines = [head, ""]
+
+    for a in sorted(alerts, key=lambda x: x.get("labels", {}).get("node", "")):
+        node = a.get("labels", {}).get("node", "?")
+        hoster = a.get("labels", {}).get("hoster")
+        lines.append(f"  • {node}" + (f" <i>({hoster})</i>" if hoster else ""))
+
+    action = first.get("labels", {}).get("action")
+    if action and not resolved:
+        lines += ["", f"👉 <i>{action}</i>"]
+
+    return "\n".join(lines)
+
+
 def alert_message(alert: dict) -> str:
     labels = alert.get("labels", {})
     ann = alert.get("annotations", {})

@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Собирает targets/nodes.yml из API панели: имена, адреса, состояние.
+# Запускать на хабе:  make sync-nodes
+#
+# Файл перезаписывается целиком — правки руками в нём не живут.
+# Что исключать, задаётся NODES_IGNORE в hub/.env.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="$ROOT/hub/.env"
+TOKEN_FILE="$ROOT/hub/secrets/panel_api_token"
+OUT="$ROOT/targets/nodes.yml"
+
+command -v jq >/dev/null || { echo "нужен jq: apt-get install -y jq"; exit 1; }
+[[ -s "$TOKEN_FILE" ]] || { echo "нет токена в $TOKEN_FILE"; exit 1; }
+
+read_env() { grep -E "^$1=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- || true; }
+
+API_URL="$(read_env PANEL_API_URL)"
+[[ -n "$API_URL" ]] || { echo "задайте PANEL_API_URL в hub/.env (например https://panel.example.com)"; exit 1; }
+IGNORE="$(read_env NODES_IGNORE)"; IGNORE="${IGNORE:-archive|ipcheker}"
+XRAY_PORT="$(read_env DEFAULT_XRAY_PORT)"; XRAY_PORT="${XRAY_PORT:-443}"
+TOKEN="$(tr -d '\n\r' < "$TOKEN_FILE")"
+
+echo "Запрашиваю ноды у ${API_URL} ..."
+RAW=$(curl -fsS -H "Authorization: Bearer ${TOKEN}" "${API_URL%/}/api/nodes") || {
+  echo "API не ответил. Проверьте PANEL_API_URL, токен и доступность панели с хаба."
+  exit 1
+}
+
+# Разные версии панели заворачивают ответ по-разному: то массив, то объект
+# с полем nodes, то и вовсе без обёртки. Разбираем все три случая.
+NODES=$(echo "$RAW" | jq -c '
+  (.response // .) as $r
+  | if ($r | type) == "array" then $r
+    elif ($r.nodes | type) == "array" then $r.nodes
+    else [] end
+')
+
+COUNT=$(echo "$NODES" | jq 'length')
+[[ "$COUNT" -gt 0 ]] || { echo "API вернул ноль нод. Сырой ответ:"; echo "$RAW" | head -c 500; exit 1; }
+
+{
+  echo "# Файл создан автоматически: make sync-nodes"
+  echo "# Руками не править — правки затрёт следующая синхронизация."
+  echo "# Источник: ${API_URL}/api/nodes, $(date '+%Y-%m-%d %H:%M')"
+  echo
+  echo "$NODES" | jq -r --arg ignore "$IGNORE" --arg port "$XRAY_PORT" '
+    .[]
+    # Выключенные в панели ноды не мониторим: они выключены намеренно.
+    | select((.isDisabled // false) == false)
+    | select((.name // "") | test($ignore; "i") | not)
+    | select((.address // "") != "")
+    | "- targets: [\"\(.address):9100\"]\n  labels:\n    node: \"\(.name)\"\n    public_ip: \"\(.address)\"\n    xray_port: \"\(.port // $port)\"\n    hoster: \"\(.providerName // "")\"\n"
+  '
+} > "$OUT.tmp"
+
+mv "$OUT.tmp" "$OUT"
+
+WRITTEN=$(grep -c '^- targets:' "$OUT" || true)
+echo "Записано нод: ${WRITTEN} из ${COUNT} (остальные выключены или в игноре)"
+echo "Файл: $OUT"
+echo
+echo "vmagent перечитает его сам в течение 30 секунд."

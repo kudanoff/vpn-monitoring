@@ -15,6 +15,9 @@ logs:
 restart:
 	cd hub && docker compose restart bot
 
+sync-nodes:    ## Собрать targets/nodes.yml из API панели
+	./scripts/sync-nodes.sh
+
 deploy:        ## Раскатать агент на ноды: make deploy [LIMIT=nl-3]
 	cd ansible && ansible-playbook -i inventory.yml playbook.yml $(if $(LIMIT),--limit $(LIMIT),)
 

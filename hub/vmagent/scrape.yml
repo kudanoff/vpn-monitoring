@@ -5,9 +5,12 @@ global:
 scrape_configs:
 
   # ── 1. Железо нод: CPU, RAM, диск, сеть, результаты speedtest ───────────
+  #     Отдельный файл от nodes.yml намеренно: там все ноды панели, а здесь
+  #     только те, куда раскатан агент. Иначе весь парк выглядит сломанным
+  #     ровно потому, что второй этап ещё не начат.
   - job_name: node
     file_sd_configs:
-      - files: [/etc/targets/nodes.yml]
+      - files: [/etc/targets/agents.yml]
     relabel_configs:
       - source_labels: [__address__]
         target_label: instance

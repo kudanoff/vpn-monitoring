@@ -59,6 +59,8 @@ COUNT=$(echo "$NODES" | jq 'length')
 {
   echo "# Файл создан автоматически: make sync-nodes"
   echo "# Руками не править — правки затрёт следующая синхронизация."
+  echo "# Отсюда берутся цели для проверок доступности из NL и РФ."
+  echo "# Ноды с агентом перечислены отдельно, в targets/agents.yml."
   echo "# Источник: ${API_URL}/api/nodes, $(date '+%Y-%m-%d %H:%M')"
   echo
   echo "$NODES" | jq -r --arg ignore "$IGNORE" --arg port "$XRAY_PORT" '

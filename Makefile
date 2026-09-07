@@ -21,6 +21,9 @@ sync-nodes:    ## Собрать targets/nodes.yml из API панели
 deploy:        ## Раскатать агент на ноды: make deploy [LIMIT=nl-3]
 	cd ansible && ansible-playbook -i inventory.yml playbook.yml $(if $(LIMIT),--limit $(LIMIT),)
 
+test-alert:    ## Проверить доставку алертов до телеграма
+	./scripts/test-alert.sh
+
 check:         ## Проверить, что конфиги валидны и цели скрейпятся
 	cd hub && docker compose exec vmagent wget -qO- http://localhost:8429/api/v1/targets | head -50
 

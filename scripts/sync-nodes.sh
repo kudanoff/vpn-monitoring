@@ -32,11 +32,15 @@ CURL_ARGS=(--http1.1 -sS -H "Authorization: Bearer ${TOKEN}")
 # Индивидуальные порты и исключения из проверки порта.
 OV_JSON='{}'
 if [[ -f "$OVERRIDES" ]]; then
-  OV_JSON=$(grep -vE '^\s*(#|$)' "$OVERRIDES" \
+  # grep без совпадений возвращает ошибку и с pipefail роняет всю цепочку,
+  # а файл из одних комментариев — совершенно нормальное состояние.
+  PARSED=$({ grep -vE '^[[:space:]]*(#|$)' "$OVERRIDES" || true; } \
     | sed -E 's/^[[:space:]]*//; s/[[:space:]]*$//' \
     | jq -R -s 'split("\n") | map(select(length>0))
         | map(capture("^(?<k>.+?)[[:space:]]*=[[:space:]]*(?<v>[^[:space:]]+)$"))
-        | map({(.k): .v}) | add // {}' 2>/dev/null || echo '{}')
+        | map({(.k): .v}) | add // {}' 2>/dev/null || true)
+  [[ -n "$PARSED" ]] && OV_JSON="$PARSED"
+  echo "Индивидуальные порты: $OV_JSON"
 fi
 
 echo "Запрашиваю ноды у ${API_URL} ..."

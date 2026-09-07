@@ -1,4 +1,4 @@
-.PHONY: up down logs restart deploy check backup
+.PHONY: up prepare up-nodes down logs restart deploy sync-nodes test-alert check backup
 
 up: prepare    ## Поднять хаб (первый этап: метрики панели + пробники)
 	cd hub && docker compose up -d --build

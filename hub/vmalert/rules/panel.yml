@@ -91,6 +91,29 @@ groups:
     annotations:
       summary: "🔄 {{ $labels.node }} — сервер перезагрузился"
 
+  # Основной алерт первого этапа: панель потеряла ноду и подтвердить,
+  # что сервер при этом жив, некому — агента на ноде ещё нет.
+  - alert: PanelNodeDisconnected
+    expr: node:panel_status == 0 unless on(node) (up{job="node"} == 1)
+    for: 10m
+    labels:
+      severity: critical
+      action: "проверить ноду: контейнер, сеть, хостера"
+    annotations:
+      summary: "🔴 {{ $labels.node }} — панель потеряла связь с нодой"
+      description: "Уже 10 минут. Если нода выключена намеренно, переименуйте её с префиксом archive:"
+
+  # Связь рвётся и восстанавливается. Это опаснее ровно упавшей ноды:
+  # пользователей выкидывает, а в панели в момент вашего взгляда всё хорошо.
+  - alert: NodeFlapping
+    expr: changes(node:panel_status[1h]) >= 4
+    for: 5m
+    labels:
+      severity: warning
+      action: "смотреть сеть и контейнер ноды, само не пройдёт"
+    annotations:
+      summary: "🔀 {{ $labels.node }} — связь рвалась {{ $value | printf \"%.0f\" }} раз за час"
+
   # Панель перестала отдавать метрики по ноде вообще.
   - alert: PanelNodeMetricsMissing
     expr: absent_over_time(node:panel_status[10m]) == 1

@@ -50,8 +50,16 @@ notify() {
 # Проверка связи с Telegram при старте: из России api.telegram.org
 # заблокирован, и сторож там бесполезен — лучше знать об этом сразу.
 selftest() {
-  curl -sS --max-time 10 "${CURL_PROXY[@]}" -o /dev/null \
-    "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" 2>&1
+  # Проверяем именно ответ, а не факт доставки запроса: на неверный токен
+  # Telegram отвечает 401, curl считает это успехом, и самопроверка врёт.
+  local out
+  out=$(curl -sS --max-time 10 "${CURL_PROXY[@]}" \
+    "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" 2>&1) || {
+      echo "сеть: $out"; return 1; }
+  case "$out" in
+    *'"ok":true'*) return 0 ;;
+    *) echo "Telegram: $out"; return 1 ;;
+  esac
 }
 
 # Мгновенная проверка отправки: то же, что делает сторож при аварии,
@@ -70,11 +78,14 @@ if [[ "${1:-}" == "--test-notify" ]]; then
 fi
 
 if [[ "${1:-}" == "--selftest" ]]; then
-  if selftest; then
+  if out=$(selftest); then
     echo "Telegram доступен${PROXY:+ через прокси $PROXY}, сторож работоспособен."
   else
-    echo "Telegram недоступен с этой машины."
-    echo "Либо укажите PROXY в .env, либо перенесите сторожа на сервер вне России."
+    echo "Проверка не прошла: $out"
+    echo
+    echo "401 Unauthorized — в .env устаревший токен бота."
+    echo "chat not found — неверный TELEGRAM_CHAT_ID."
+    echo "таймаут — нет связи, проверьте PROXY."
     exit 1
   fi
   exit 0

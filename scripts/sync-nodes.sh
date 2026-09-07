@@ -21,12 +21,23 @@ API_URL="$(read_env PANEL_API_URL)"
 IGNORE="$(read_env NODES_IGNORE)"; IGNORE="${IGNORE:-archive|ipcheker}"
 XRAY_PORT="$(read_env DEFAULT_XRAY_PORT)"; XRAY_PORT="${XRAY_PORT:-443}"
 COOKIE="$(read_env PANEL_COOKIE)"
+OVERRIDES="$ROOT/targets/port-overrides.conf"
 TOKEN="$(tr -d '\n\r' < "$TOKEN_FILE")"
 
 # --http1.1 намеренно: панели за nginx нередко рвут HTTP/2-поток на API.
 CURL_ARGS=(--http1.1 -sS -H "Authorization: Bearer ${TOKEN}")
 # Кука защиты обратного прокси, если она включена в панели.
 [[ -n "$COOKIE" ]] && CURL_ARGS+=(-H "Cookie: ${COOKIE}")
+
+# Индивидуальные порты и исключения из проверки порта.
+OV_JSON='{}'
+if [[ -f "$OVERRIDES" ]]; then
+  OV_JSON=$(grep -vE '^\s*(#|$)' "$OVERRIDES" \
+    | sed -E 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+    | jq -R -s 'split("\n") | map(select(length>0))
+        | map(capture("^(?<k>.+?)[[:space:]]*=[[:space:]]*(?<v>[^[:space:]]+)$"))
+        | map({(.k): .v}) | add // {}' 2>/dev/null || echo '{}')
+fi
 
 echo "Запрашиваю ноды у ${API_URL} ..."
 BODY_FILE=$(mktemp)
@@ -63,16 +74,20 @@ COUNT=$(echo "$NODES" | jq 'length')
   echo "# Ноды с агентом перечислены отдельно, в targets/agents.yml."
   echo "# Источник: ${API_URL}/api/nodes, $(date '+%Y-%m-%d %H:%M')"
   echo
-  echo "$NODES" | jq -r --arg ignore "$IGNORE" --arg port "$XRAY_PORT" '
+  echo "$NODES" | jq -r --arg ignore "$IGNORE" --arg port "$XRAY_PORT" --argjson ov "$OV_JSON" '
     .[]
     # Выключенные в панели ноды не мониторим: они выключены намеренно.
     | select((.isDisabled // false) == false)
     | select((.name // "") | test($ignore; "i") | not)
     | select((.address // "") != "")
     # Поле port у ноды — это её внутренний API (2222), закрытый для всех,
-    # кроме панели. Проверять снаружи надо порт, на котором xray принимает
-    # клиентов; панель его в списке нод не отдаёт, берём из DEFAULT_XRAY_PORT.
-    | "- targets: [\"\(.address):9100\"]\n  labels:\n    node: \"\(.name)\"\n    public_ip: \"\(.address)\"\n    xray_port: \"\($port)\"\n    hoster: \"\(.providerName // "")\"\n"
+    # кроме панели. Порт, на котором xray принимает клиентов, панель в
+    # списке нод не отдаёт: берём из DEFAULT_XRAY_PORT или из overrides.
+    | . as $n
+    | (($ov[$n.name] // $port)) as $xp
+    | "- targets: [\"\($n.address):9100\"]\n  labels:\n    node: \"\($n.name)\"\n    public_ip: \"\($n.address)\"\n"
+      + (if $xp == "skip" then "" else "    xray_port: \"\($xp)\"\n" end)
+      + "    hoster: \"\($n.providerName // "")\"\n"
   '
 } > "$OUT.tmp"
 

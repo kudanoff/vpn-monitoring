@@ -1,4 +1,4 @@
-.PHONY: up prepare up-nodes down logs restart deploy sync-nodes test-alert check backup
+.PHONY: up prepare up-nodes down logs restart deploy sync-nodes test-alert test-rule check backup
 
 up: prepare    ## Поднять хаб (первый этап: метрики панели + пробники)
 	cd hub && docker compose up -d --build
@@ -30,6 +30,9 @@ deploy:        ## Раскатать агент на ноды: make deploy [LIMI
 
 test-alert:    ## Проверить доставку алертов до телеграма
 	./scripts/test-alert.sh
+
+test-rule:     ## Проверить всю цепочку от правила до телеграма
+	./scripts/test-rule.sh
 
 check:         ## Проверить, что конфиги валидны и цели скрейпятся
 	cd hub && docker compose exec vmagent wget -qO- http://localhost:8429/api/v1/targets | head -50

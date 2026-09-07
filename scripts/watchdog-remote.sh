@@ -23,11 +23,40 @@ fails=0
 [[ -f "$STATE.fails" ]] && fails=$(cat "$STATE.fails")
 
 notify() {
-  curl -sS --max-time 20 -X POST \
-    "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-    -d "chat_id=${TELEGRAM_CHAT_ID}" -d "parse_mode=HTML" \
-    --data-urlencode "text=$1" >/dev/null || true
+  # Молча проглоченная неудача отправки — худшее, что может сделать сторож:
+  # он выглядит работающим, а сообщений нет. Пишем в системный журнал.
+  local out
+  if out=$(curl -sS --max-time 20 -X POST \
+      "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+      -d "chat_id=${TELEGRAM_CHAT_ID}" -d "parse_mode=HTML" \
+      --data-urlencode "text=$1" 2>&1); then
+    case "$out" in
+      *'"ok":true'*) return 0 ;;
+      *) logger -t vpnmon-watchdog "Telegram отверг сообщение: $out" ;;
+    esac
+  else
+    logger -t vpnmon-watchdog "не достучались до Telegram: $out"
+  fi
+  return 1
 }
+
+# Проверка связи с Telegram при старте: из России api.telegram.org
+# заблокирован, и сторож там бесполезен — лучше знать об этом сразу.
+selftest() {
+  curl -sS --max-time 10 -o /dev/null \
+    "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" 2>&1
+}
+
+if [[ "${1:-}" == "--selftest" ]]; then
+  if selftest; then
+    echo "Telegram доступен, сторож на этой машине работоспособен."
+  else
+    echo "Telegram недоступен с этой машины — сторожу здесь не место."
+    echo "Перенесите его на сервер вне России."
+    exit 1
+  fi
+  exit 0
+fi
 
 if body=$(curl -fsS --max-time 15 "$HUB_HEALTH_URL" 2>&1); then
   echo 0 > "$STATE.fails"

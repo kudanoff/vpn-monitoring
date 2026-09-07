@@ -323,12 +323,36 @@ async def handle_remnawave(request: web.Request) -> web.Response:
     return web.Response(text="ok")
 
 
+async def handle_health(request: web.Request) -> web.Response:
+    """
+    Глубокая проверка: отвечаем "жив" только если хаб реально собирает данные.
+    Простое "контейнер запущен" бесполезно — vmagent может молча не скрейпить,
+    и мониторинг будет выглядеть работающим, ничего не видя.
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            alive = await instant(session, 'count(up{job="self"} == 1)')
+            fresh = await instant(session, "count(node:panel_status)")
+    except Exception as exc:
+        return web.Response(status=503, text=f"база недоступна: {exc}")
+
+    services = alive[0]["value"] if alive else 0
+    nodes = fresh[0]["value"] if fresh else 0
+
+    if services < 3:
+        return web.Response(status=503, text=f"живых служб только {services:.0f}")
+    if nodes < 1:
+        return web.Response(status=503, text="нет свежих метрик от панели")
+
+    return web.Response(text=f"ok: служб {services:.0f}, нод {nodes:.0f}")
+
+
 async def run_web() -> None:
     app = web.Application()
     app.router.add_post("/alerts", handle_alerts)
     app.router.add_post("/watchdog", handle_watchdog)
     app.router.add_post("/remnawave", handle_remnawave)
-    app.router.add_get("/healthz", lambda r: web.Response(text="ok"))
+    app.router.add_get("/healthz", handle_health)
 
     runner = web.AppRunner(app)
     await runner.setup()

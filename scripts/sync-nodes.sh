@@ -69,7 +69,10 @@ COUNT=$(echo "$NODES" | jq 'length')
     | select((.isDisabled // false) == false)
     | select((.name // "") | test($ignore; "i") | not)
     | select((.address // "") != "")
-    | "- targets: [\"\(.address):9100\"]\n  labels:\n    node: \"\(.name)\"\n    public_ip: \"\(.address)\"\n    xray_port: \"\(.port // $port)\"\n    hoster: \"\(.providerName // "")\"\n"
+    # Поле port у ноды — это её внутренний API (2222), закрытый для всех,
+    # кроме панели. Проверять снаружи надо порт, на котором xray принимает
+    # клиентов; панель его в списке нод не отдаёт, берём из DEFAULT_XRAY_PORT.
+    | "- targets: [\"\(.address):9100\"]\n  labels:\n    node: \"\(.name)\"\n    public_ip: \"\(.address)\"\n    xray_port: \"\($port)\"\n    hoster: \"\(.providerName // "")\"\n"
   '
 } > "$OUT.tmp"
 

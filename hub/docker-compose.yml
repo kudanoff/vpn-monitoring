@@ -47,6 +47,9 @@ services:
       - -remoteRead.url=http://victoriametrics:8428
       - -notifier.url=http://alertmanager:9093
       - -evaluationInterval=30s
+      # Без этого правки правил применяются только при перезапуске: файл
+      # обновлён, а vmalert молча считает по старому.
+      - -rule.configCheckInterval=30s
       - -external.label=hub=${HUB_NAME:-nl}
     volumes:
       - ./vmalert/rules:/etc/rules:ro

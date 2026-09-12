@@ -175,9 +175,27 @@ async def cmd_help(message: Message) -> None:
         "/status — сводка по всем нодам\n"
         "/node &lt;имя&gt; — подробности по ноде\n"
         "/mute &lt;имя&gt; &lt;часы&gt; — заглушить алерты на время работ\n"
-        "/unmute &lt;имя&gt; — снять заглушку\n\n"
+        "/unmute &lt;имя&gt; — снять заглушку\n"
+        "/chatid — ID этого чата, для настройки алертов\n\n"
         "<i>Архивные и служебные ноды скрыты. Список задаётся "
         "переменной NODES_IGNORE в .env</i>"
+    )
+
+
+@dp.message(Command("chatid"))
+async def cmd_chatid(message: Message) -> None:
+    """
+    Идентификатор чата, где выполнена команда. Нужен для TELEGRAM_CHAT_ID:
+    у группы он меняется при превращении в супергруппу, и алерты молча
+    перестают доходить, хотя команды продолжают работать.
+    """
+    chat = message.chat
+    current = "совпадает с настройкой" if chat.id == CHAT_ID else f"НЕ совпадает (в настройке {CHAT_ID})"
+    await message.answer(
+        f"Чат: <b>{chat.title or chat.full_name}</b>\n"
+        f"Тип: {chat.type}\n"
+        f"ID: <code>{chat.id}</code>\n\n"
+        f"<i>{current}</i>"
     )
 
 

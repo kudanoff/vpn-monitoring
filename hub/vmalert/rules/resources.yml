@@ -8,7 +8,7 @@ groups:
   rules:
 
   - record: node:cpu_busy:ratio
-    expr: 1 - avg by(node, instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))
+    expr: 1 - avg by(project, node, instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))
 
   - record: node:mem_used:ratio
     expr: 1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)
@@ -18,25 +18,25 @@ groups:
     for: 15m
     labels: {severity: warning}
     annotations:
-      summary: "🔥 {{ $labels.node }} — CPU {{ $value | humanizePercentage }} более 15 минут"
+      summary: "🔥 [{{ $labels.project }}] {{ $labels.node }} — CPU {{ $value | humanizePercentage }} более 15 минут"
 
   # Отдельная история: процессор "свободен", а всё тормозит, потому что
   # его отбирает сосед по гипервизору. На VPS это частая и незаметная беда.
   - alert: HighCPUSteal
-    expr: avg by(node) (rate(node_cpu_seconds_total{mode="steal"}[10m])) > 0.10
+    expr: avg by(project, node) (rate(node_cpu_seconds_total{mode="steal"}[10m])) > 0.10
     for: 20m
     labels:
       severity: warning
       action: "жаловаться хостеру или переезжать"
     annotations:
-      summary: "🐌 {{ $labels.node }} — steal {{ $value | humanizePercentage }}, гипервизор душит"
+      summary: "🐌 [{{ $labels.project }}] {{ $labels.node }} — steal {{ $value | humanizePercentage }}, гипервизор душит"
 
   - alert: HighMemory
     expr: node:mem_used:ratio > 0.92
     for: 15m
     labels: {severity: warning}
     annotations:
-      summary: "🧠 {{ $labels.node }} — память занята на {{ $value | humanizePercentage }}"
+      summary: "🧠 [{{ $labels.project }}] {{ $labels.node }} — память занята на {{ $value | humanizePercentage }}"
 
   - alert: DiskFillingUp
     expr: |
@@ -45,7 +45,7 @@ groups:
     for: 30m
     labels: {severity: warning}
     annotations:
-      summary: "💾 {{ $labels.node }} — на {{ $labels.mountpoint }} осталось {{ $value | humanizePercentage }}"
+      summary: "💾 [{{ $labels.project }}] {{ $labels.node }} — на {{ $labels.mountpoint }} осталось {{ $value | humanizePercentage }}"
 
   # Прогноз: место кончится в ближайшие сутки. Ловит разросшиеся логи xray
   # до того, как они уронят ноду.
@@ -57,4 +57,4 @@ groups:
     for: 1h
     labels: {severity: warning}
     annotations:
-      summary: "📉 {{ $labels.node }} — диск {{ $labels.mountpoint }} кончится за сутки"
+      summary: "📉 [{{ $labels.project }}] {{ $labels.node }} — диск {{ $labels.mountpoint }} кончится за сутки"

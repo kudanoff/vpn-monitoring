@@ -6,7 +6,7 @@ route:
   # Группируем по типу алерта: если ляжет дата-центр, придёт одно сообщение
   # со списком нод, а не двадцать четыре отдельных. В момент реальной аварии
   # это разница между "видно суть" и "отключил уведомления".
-  group_by: [alertname]
+  group_by: [alertname, project]
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 4h
@@ -16,6 +16,18 @@ route:
     # это ложные тревоги. Держите этот список в согласии с NODES_IGNORE в .env.
     - receiver: blackhole
       matchers: ['node =~ "(?i).*(archive|ipcheker).*"']
+
+    # У каждого проекта свой бот и свой чат.
+    - receiver: bot-most
+      matchers: ['project = "most"']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      routes:
+        - receiver: bot-most
+          matchers: [severity = "critical"]
+          group_wait: 10s
+          repeat_interval: 1h
 
     # Сторож ходит отдельным маршрутом и редко.
     - receiver: bot-watchdog
@@ -57,3 +69,8 @@ receivers:
     webhook_configs:
       - url: http://bot:8080/watchdog
         send_resolved: false
+
+  - name: bot-most
+    webhook_configs:
+      - url: http://bot-most:8080/alerts
+        send_resolved: true

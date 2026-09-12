@@ -5,6 +5,12 @@ hub/secrets/*
 ansible/inventory.yml
 .DB_Store
 # Генерируется скриптом sync-nodes.sh
+targets/nodes-*.yml
+targets/agents-*.yml
+targets/agents.yml
 targets/nodes.yml
 # Настраивается под конкретную установку
+targets/port-overrides-*.conf
 targets/port-overrides.conf
+# Собирается render-scrape.sh из hub/vmagent/tpl/
+hub/vmagent/scrape.yml

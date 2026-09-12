@@ -36,6 +36,9 @@ WEBHOOK_SECRET = os.getenv("REMNAWAVE_WEBHOOK_SECRET", "")
 # Ноды, которые не нужно показывать и по которым не нужно алертить:
 # архивные, тестовые, служебные. Регулярное выражение по имени из панели.
 IGNORE_RE = re.compile(os.getenv("NODES_IGNORE", r"archive|ipcheker"), re.IGNORECASE)
+# Один хаб обслуживает несколько проектов. Бот показывает только свой:
+# у каждого проекта свой бот, свой чат и свои дежурные.
+PROJECT = os.getenv("PROJECT", "")
 ALERTMANAGER_URL = os.getenv("ALERTMANAGER_URL", "http://alertmanager:9093")
 HEALTHCHECKS_URL = os.getenv("HEALTHCHECKS_URL", "")
 
@@ -50,33 +53,44 @@ dp = Dispatcher()
 # Панель и агент дополняют друг друга: панель отдаёт данные по всем нодам
 # сразу, агент — точнее и независимо. Где есть агент, берём его; где нет,
 # показываем то, что знает панель. Поэтому у большинства полей два запроса.
+def _p(inner: str = "") -> str:
+    """Селектор проекта для PromQL: добавляется к каждому запросу бота."""
+    if not PROJECT:
+        return "{" + inner + "}" if inner else ""
+    sel = f'project="{PROJECT}"'
+    return "{" + (f"{inner}, {sel}" if inner else sel) + "}"
+
+
+# Панель и агент дополняют друг друга: панель отдаёт данные по всем нодам
+# сразу, агент — точнее и независимо. Где есть агент, берём его; где нет,
+# показываем то, что знает панель. Поэтому у большинства полей два запроса.
 QUERIES = {
-    "up":        'max by(node) (up{job="node"})',
-    "probe_nl":  'max by(node) (probe_success{vantage="nl"})',
-    "probe_ru":  'max by(node) (probe_success{job="probe_ru"})',
-    "tcp_ru":    'max by(node) (probe_success{job="probe_ru_tcp"})',
-    "panel":     "node:panel_status",
-    "users":     "node:panel_users",
+    "up":        f'max by(node) (up{_p("job=~\"node.*\"")})',
+    "probe_nl":  f'max by(node) (probe_success{_p("vantage=\"nl\"")})',
+    "probe_ru":  f'max by(node) (probe_success{_p("job=~\"probe_ru_.*\", vantage=\"ru\"")})',
+    "tcp_ru":    f'max by(node) (probe_success{_p("job=~\"probe_ru_tcp.*\"")})',
+    "panel":     f"max by(node) (node:panel_status{_p()})",
+    "users":     f"max by(node) (node:panel_users{_p()})",
     # Агент, если раскатан
-    "cpu":       "max by(node) (node:cpu_busy:ratio)",
-    "mem":       "max by(node) (node:mem_used:ratio)",
-    "rx":        "max by(node) (node:net_rx:bps)",
-    "tx":        "max by(node) (node:net_tx:bps)",
+    "cpu":       f"max by(node) (node:cpu_busy:ratio{_p()})",
+    "mem":       f"max by(node) (node:mem_used:ratio{_p()})",
+    "rx":        f"max by(node) (node:net_rx:bps{_p()})",
+    "tx":        f"max by(node) (node:net_tx:bps{_p()})",
     # Панель — источник по умолчанию
-    "cpu_panel": "node:panel_cpu",
-    "mem_panel": "node:panel_mem",
-    "rx_panel":  "node:panel_rx",
-    "tx_panel":  "node:panel_tx",
+    "cpu_panel": f"max by(node) (node:panel_cpu{_p()})",
+    "mem_panel": f"max by(node) (node:panel_mem{_p()})",
+    "rx_panel":  f"max by(node) (node:panel_rx{_p()})",
+    "tx_panel":  f"max by(node) (node:panel_tx{_p()})",
 }
 
 DETAIL_QUERIES = {
-    "steal":     'avg by(node) (rate(node_cpu_seconds_total{mode="steal"}[10m]))',
-    "uptime":    "max by(node) (time() - node_boot_time_seconds)",
-    "uptime_panel": "node:panel_uptime",
-    "p95":       "max by(node) (node:net_tx:p95_24h)",
-    "p95_panel": "node:panel_tx_p95_24h",
-    "link":      "max by(node) (node:link_capacity:bps)",
-    "speedtest": "max by(node) (node_port_speedtest_bps)",
+    "steal":        f'avg by(node) (rate(node_cpu_seconds_total{_p("mode=\"steal\"")}[10m]))',
+    "uptime":       f"max by(node) (time() - node_boot_time_seconds{_p()})",
+    "uptime_panel": f"max by(node) (node:panel_uptime{_p()})",
+    "p95":          f"max by(node) (node:net_tx:p95_24h{_p()})",
+    "p95_panel":    f"max by(node) (node:panel_tx_p95_24h{_p()})",
+    "link":         f"max by(node) (node:link_capacity:bps{_p()})",
+    "speedtest":    f"max by(node) (node_port_speedtest_bps{_p()})",
 }
 
 # Что чем подменяется, если агента на ноде ещё нет.
@@ -119,7 +133,7 @@ async def collect(session: aiohttp.ClientSession, detailed: bool = False) -> dic
 
     # Флаг страны и провайдер приходят от панели — подписываем ими карточки.
     try:
-        for row in await instant(session, "node:name_map"):
+        for row in await instant(session, f"node:name_map{_p()}"):
             if IGNORE_RE.search(row["node"]) or row["node"] not in nodes:
                 continue
             meta = nodes[row["node"]]
@@ -130,7 +144,7 @@ async def collect(session: aiohttp.ClientSession, detailed: bool = False) -> dic
 
     # Ноды, которые есть в конфиге, но ещё ни разу не отдали метрик,
     # всё равно должны быть видны — иначе пропажу легко не заметить.
-    for row in await instant(session, 'up{job="node"}'):
+    for row in await instant(session, f'up{_p("job=~\"node.*\"")}'):
         meta = nodes.setdefault(row.get("node", "?"), {})
         meta.setdefault("hoster", row.get("hoster"))
         meta.setdefault("public_ip", row.get("public_ip"))
@@ -332,7 +346,7 @@ async def handle_health(request: web.Request) -> web.Response:
     try:
         async with aiohttp.ClientSession() as session:
             alive = await instant(session, 'count(up{job="self"} == 1)')
-            fresh = await instant(session, "count(node:panel_status)")
+            fresh = await instant(session, f"count(node:panel_status{_p()})")
     except Exception as exc:
         return web.Response(status=503, text=f"база недоступна: {exc}")
 
@@ -375,8 +389,11 @@ async def main() -> None:
 
     # А вот недоступный чат ронять бота не должен: команды в личке будут
     # работать, и по логу сразу видно, что чинить.
+    hello = "🚀 Мониторинг запущен. /status — сводка"
+    if PROJECT:
+        hello = f"🚀 Мониторинг проекта <b>{PROJECT}</b> запущен. /status — сводка"
     try:
-        await bot.send_message(CHAT_ID, "🚀 Мониторинг запущен. /status — сводка")
+        await bot.send_message(CHAT_ID, hello)
     except Exception as exc:
         log.error("не удалось написать в чат %s: %s. Проверьте TELEGRAM_CHAT_ID "
                   "и что бот добавлен в группу с правом писать.", CHAT_ID, exc)

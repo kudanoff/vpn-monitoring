@@ -16,45 +16,45 @@ groups:
   # нод не нужно вести руками: появилась нода в панели, появилась в боте.
   - record: node:name_map
     expr: |
-      max by(node_uuid, node, node_country_emoji, provider_name) (
+      max by(project, node_uuid, node, node_country_emoji, provider_name) (
         label_replace(remnawave_node_basic_info, "node", "$1", "node_name", "(.+)")
       )
 
   - record: node:panel_status
-    expr: max by(node) (remnawave_node_status * on(node_uuid) group_left(node) node:name_map)
+    expr: max by(project, node) (remnawave_node_status * on(project, node_uuid) group_left(node) node:name_map)
 
   - record: node:panel_users
-    expr: max by(node) (remnawave_node_online_users * on(node_uuid) group_left(node) node:name_map)
+    expr: max by(project, node) (remnawave_node_online_users * on(project, node_uuid) group_left(node) node:name_map)
 
   - record: node:panel_uptime
-    expr: max by(node) (remnawave_node_uptime_seconds * on(node_uuid) group_left(node) node:name_map)
+    expr: max by(project, node) (remnawave_node_uptime_seconds * on(project, node_uuid) group_left(node) node:name_map)
 
   # Загрузка процессора: load average, поделённый на число ядер.
   # Это не то же самое, что busy% у node_exporter, но для "нода задыхается"
   # показатель даже честнее — учитывает очередь на ввод-вывод.
   - record: node:panel_cpu
     expr: |
-      max by(node) (
+      max by(project, node) (
         (
-          max by(node_uuid) ({__name__=~"remnawave_node_cpu_load_avg_1.*"})
-            / on(node_uuid) group_left() max by(node_uuid) (remnawave_node_cpu_count)
-        ) * on(node_uuid) group_left(node) node:name_map
+          max by(project, node_uuid) ({__name__=~"remnawave_node_cpu_load_avg_1.*"})
+            / on(project, node_uuid) group_left() max by(project, node_uuid) (remnawave_node_cpu_count)
+        ) * on(project, node_uuid) group_left(node) node:name_map
       )
 
   - record: node:panel_mem
     expr: |
-      max by(node) (
+      max by(project, node) (
         (
-          1 - remnawave_node_memory_free_bytes / on(node_uuid) group_left()
+          1 - remnawave_node_memory_free_bytes / on(project, node_uuid) group_left()
               remnawave_node_memory_total_bytes
-        ) * on(node_uuid) group_left(node) node:name_map
+        ) * on(project, node_uuid) group_left(node) node:name_map
       )
 
   - record: node:panel_rx
-    expr: max by(node) (remnawave_node_network_rx_bytes_per_sec * 8 * on(node_uuid) group_left(node) node:name_map)
+    expr: max by(project, node) (remnawave_node_network_rx_bytes_per_sec * 8 * on(project, node_uuid) group_left(node) node:name_map)
 
   - record: node:panel_tx
-    expr: max by(node) (remnawave_node_network_tx_bytes_per_sec * 8 * on(node_uuid) group_left(node) node:name_map)
+    expr: max by(project, node) (remnawave_node_network_tx_bytes_per_sec * 8 * on(project, node_uuid) group_left(node) node:name_map)
 
   # p95 за сутки — цифра, по которой хостеры считают деньги и по которой
   # видно реальный потолок канала, а не среднее.
@@ -74,14 +74,14 @@ groups:
     for: 15m
     labels: {severity: warning}
     annotations:
-      summary: "🔥 {{ $labels.node }} — процессор загружен на {{ $value | humanizePercentage }}"
+      summary: "🔥 [{{ $labels.project }}] {{ $labels.node }} — процессор загружен на {{ $value | humanizePercentage }}"
 
   - alert: PanelHighMemory
     expr: node:panel_mem > 0.92
     for: 15m
     labels: {severity: warning}
     annotations:
-      summary: "🧠 {{ $labels.node }} — память занята на {{ $value | humanizePercentage }}"
+      summary: "🧠 [{{ $labels.project }}] {{ $labels.node }} — память занята на {{ $value | humanizePercentage }}"
 
   # Нода перезагрузилась. Само по себе не авария, но если это повторяется —
   # верный признак, что с сервером что-то не так.
@@ -89,18 +89,18 @@ groups:
     expr: node:panel_uptime < 600 and node:panel_uptime offset 10m > 600
     labels: {severity: info}
     annotations:
-      summary: "🔄 {{ $labels.node }} — сервер перезагрузился"
+      summary: "🔄 [{{ $labels.project }}] {{ $labels.node }} — сервер перезагрузился"
 
   # Основной алерт первого этапа: панель потеряла ноду и подтвердить,
   # что сервер при этом жив, некому — агента на ноде ещё нет.
   - alert: PanelNodeDisconnected
-    expr: node:panel_status == 0 unless on(node) (up{job="node"} == 1)
+    expr: node:panel_status == 0 unless on(project, node) (up{job="node"} == 1)
     for: 10m
     labels:
       severity: critical
       action: "проверить ноду: контейнер, сеть, хостера"
     annotations:
-      summary: "🔴 {{ $labels.node }} — панель потеряла связь с нодой"
+      summary: "🔴 [{{ $labels.project }}] {{ $labels.node }} — панель потеряла связь с нодой"
       description: "Уже 10 минут. Если нода выключена намеренно, переименуйте её с префиксом archive:"
 
   # Связь рвётся и восстанавливается. Это опаснее ровно упавшей ноды:
@@ -112,7 +112,7 @@ groups:
       severity: warning
       action: "смотреть сеть и контейнер ноды, само не пройдёт"
     annotations:
-      summary: "🔀 {{ $labels.node }} — связь рвалась {{ $value | printf \"%.0f\" }} раз за час"
+      summary: "🔀 [{{ $labels.project }}] {{ $labels.node }} — связь рвалась {{ $value | printf \"%.0f\" }} раз за час"
 
   # Панель перестала отдавать метрики по ноде вообще.
   - alert: PanelNodeMetricsMissing

@@ -85,6 +85,8 @@ services:
       - "${HUB_PRIVATE_IP:-127.0.0.1}:5201:5201"
     networks: [mon]
 
+  # У каждого проекта свой бот: свой токен, свой чат, свои дежурные.
+  # Код один и тот же, различает их переменная PROJECT.
   bot:
     <<: *restart
     build: ./bot
@@ -92,10 +94,28 @@ services:
     environment:
       VM_URL: http://victoriametrics:8428
       ALERTMANAGER_URL: http://alertmanager:9093
+      PROJECT: ${PROJECT_ID:-main}
     ports:
       # Наружу не торчит: слушаем только на приватном интерфейсе,
       # сюда стучится Remnawave своими вебхуками.
       - "${HUB_PRIVATE_IP:-127.0.0.1}:8080:8080"
+    depends_on: [victoriametrics, alertmanager]
+    networks: [mon]
+
+  bot-most:
+    <<: *restart
+    build: ./bot
+    env_file: [.env]
+    environment:
+      VM_URL: http://victoriametrics:8428
+      ALERTMANAGER_URL: http://alertmanager:9093
+      PROJECT: most
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN_MOST}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID_MOST}
+      TELEGRAM_ADMINS: ${TELEGRAM_ADMINS_MOST:-}
+      REMNAWAVE_WEBHOOK_SECRET: ${REMNAWAVE_WEBHOOK_SECRET_MOST:-}
+    ports:
+      - "${HUB_PRIVATE_IP:-127.0.0.1}:8081:8080"
     depends_on: [victoriametrics, alertmanager]
     networks: [mon]
 

@@ -1,0 +1,89 @@
+
+# ═══ Проект __P__ ═══════════════════════════════════════════════════════
+
+  # Железо нод: только те, куда раскатан агент (второй этап).
+  - job_name: node___P__
+    file_sd_configs:
+      - files: [/etc/targets/agents-__P__.yml]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+      - target_label: project
+        replacement: __P__
+
+  # Метрики панели Remnawave. Адреса и секреты — из .env и secrets/,
+  # чтобы правки не затирались при обновлении репозитория.
+  - job_name: remnawave___P__
+    metrics_path: /metrics
+    basic_auth:
+      username_file: /etc/secrets/panel_metrics_user___P__
+      password_file: /etc/secrets/panel_metrics_password___P__
+    static_configs:
+      - targets: ["%{PANEL_ADDR___PU__}"]
+        labels:
+          service: remnawave-panel
+          project: __P__
+    metric_relabel_configs:
+      - action: labeldrop
+        regex: app
+
+  # Доступность с хаба: взгляд снаружи, из страны хаба.
+  - job_name: probe_nl___P__
+    metrics_path: /probe
+    params:
+      module: [icmp]
+    file_sd_configs:
+      - files: [/etc/targets/nodes-__P__.yml]
+    relabel_configs:
+      - source_labels: [public_ip]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
+      - target_label: vantage
+        replacement: nl
+      - target_label: project
+        replacement: __P__
+
+  # Доступность из локации панели проекта. Разница с предыдущей проверкой
+  # и есть диагноз "нода жива, но её IP зарезан".
+  - job_name: probe_ru___P__
+    metrics_path: /probe
+    params:
+      module: [icmp]
+    file_sd_configs:
+      - files: [/etc/targets/nodes-__P__.yml]
+    relabel_configs:
+      - source_labels: [public_ip]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: "%{PROBER_ADDR___PU__}"
+      - target_label: vantage
+        replacement: ru
+      - target_label: project
+        replacement: __P__
+
+  # Порт, на котором xray принимает клиентов.
+  - job_name: probe_ru_tcp___P__
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    file_sd_configs:
+      - files: [/etc/targets/nodes-__P__.yml]
+    relabel_configs:
+      - source_labels: [tcp_target]
+        regex: ""
+        action: drop
+      - source_labels: [tcp_target]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: "%{PROBER_ADDR___PU__}"
+      - target_label: vantage
+        replacement: ru
+      - target_label: project
+        replacement: __P__

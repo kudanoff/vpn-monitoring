@@ -1,0 +1,10 @@
+
+# ═══ Сам мониторинг ═════════════════════════════════════════════════════
+  - job_name: self
+    static_configs:
+      - targets:
+          - vmagent:8429
+          - victoriametrics:8428
+          - vmalert:8880
+          - alertmanager:9093
+          - blackbox:9115

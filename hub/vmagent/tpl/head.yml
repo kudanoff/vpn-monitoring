@@ -1,0 +1,7 @@
+# ВНИМАНИЕ: файл собирается скриптом render-scrape.sh из hub/vmagent/tpl/.
+# Править надо шаблоны, а не этот файл — правки здесь затрёт следующая сборка.
+global:
+  scrape_interval: 30s
+  scrape_timeout: 10s
+
+scrape_configs:

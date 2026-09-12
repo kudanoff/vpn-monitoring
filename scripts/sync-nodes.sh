@@ -1,27 +1,45 @@
 #!/usr/bin/env bash
-# Собирает targets/nodes.yml из API панели: имена, адреса, состояние.
-# Запускать на хабе:  make sync-nodes
+# Собирает targets/nodes-<проект>.yml из API панели этого проекта.
+#   make sync-nodes              — все проекты из PROJECTS
+#   ./scripts/sync-nodes.sh most — только один
 #
-# Файл перезаписывается целиком — правки руками в нём не живут.
-# Что исключать, задаётся NODES_IGNORE в hub/.env.
+# Файл перезаписывается целиком: правки руками в нём не живут.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="$ROOT/hub/.env"
-TOKEN_FILE="$ROOT/hub/secrets/panel_api_token"
-OUT="$ROOT/targets/nodes.yml"
+
+read_env() { grep -E "^$1=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' || true; }
+
+# Без аргумента обходим все проекты, перезапуская себя же для каждого.
+if [[ $# -eq 0 ]]; then
+  PROJECTS="$(read_env PROJECTS)"
+  [[ -n "$PROJECTS" ]] || { echo 'задайте PROJECTS в hub/.env, например: PROJECTS="main most"'; exit 1; }
+  rc=0
+  for p in $PROJECTS; do
+    echo "─── $p ───"
+    "$0" "$p" || rc=1
+  done
+  exit $rc
+fi
+
+PROJECT="$1"
+PU=$(echo "$PROJECT" | tr '[:lower:]-' '[:upper:]_')
+TOKEN_FILE="$ROOT/hub/secrets/panel_api_token_${PROJECT}"
+OUT="$ROOT/targets/nodes-${PROJECT}.yml"
 
 command -v jq >/dev/null || { echo "нужен jq: apt-get install -y jq"; exit 1; }
 [[ -s "$TOKEN_FILE" ]] || { echo "нет токена в $TOKEN_FILE"; exit 1; }
 
-read_env() { grep -E "^$1=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- || true; }
+# Переменные проекта: PANEL_API_URL_MOST и так далее.
+proj_env() { read_env "${1}_${PU}"; }
 
-API_URL="$(read_env PANEL_API_URL)"
-[[ -n "$API_URL" ]] || { echo "задайте PANEL_API_URL в hub/.env (например https://panel.example.com)"; exit 1; }
-IGNORE="$(read_env NODES_IGNORE)"; IGNORE="${IGNORE:-archive|ipcheker}"
-XRAY_PORT="$(read_env DEFAULT_XRAY_PORT)"; XRAY_PORT="${XRAY_PORT:-443}"
-COOKIE="$(read_env PANEL_COOKIE)"
-OVERRIDES="$ROOT/targets/port-overrides.conf"
+API_URL="$(proj_env PANEL_API_URL)"
+[[ -n "$API_URL" ]] || { echo "задайте PANEL_API_URL_${PU} в hub/.env (например https://panel.example.com)"; exit 1; }
+IGNORE="$(proj_env NODES_IGNORE)"; IGNORE="${IGNORE:-$(read_env NODES_IGNORE)}"; IGNORE="${IGNORE:-archive|ipcheker}"
+XRAY_PORT="$(proj_env DEFAULT_XRAY_PORT)"; XRAY_PORT="${XRAY_PORT:-443}"
+COOKIE="$(proj_env PANEL_COOKIE)"
+OVERRIDES="$ROOT/targets/port-overrides-${PROJECT}.conf"
 # Первый запуск: создаём файл исключений из образца, чтобы было что править.
 [[ -f "$OVERRIDES" ]] || cp "$ROOT/targets/port-overrides.conf.example" "$OVERRIDES" 2>/dev/null || true
 TOKEN="$(tr -d '\n\r' < "$TOKEN_FILE")"
@@ -78,7 +96,7 @@ COUNT=$(echo "$NODES" | jq 'length')
   echo "# Руками не править — правки затрёт следующая синхронизация."
   echo "# Отсюда берутся цели для проверок доступности из NL и РФ."
   echo "# Ноды с агентом перечислены отдельно, в targets/agents.yml."
-  echo "# Источник: ${API_URL}/api/nodes, $(date '+%Y-%m-%d %H:%M')"
+  echo "# Проект: ${PROJECT}. Источник: ${API_URL}/api/nodes, $(date '+%Y-%m-%d %H:%M')"
   echo
   echo "$NODES" | jq -r --arg ignore "$IGNORE" --arg port "$XRAY_PORT" --argjson ov "$OV_JSON" '
     .[]

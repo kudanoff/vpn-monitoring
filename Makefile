@@ -2,10 +2,10 @@
 
 up: prepare    ## Поднять хаб (первый этап: метрики панели + пробники)
 	cd hub && docker compose up -d --build
-	@# Alertmanager не перечитывает конфиг сам, а compose не пересоздаёт
-	@# контейнер из-за правки примонтированного файла: маршруты молча
-	@# остаются старыми. Посылаем ему HUP явно.
-	-@cd hub && docker compose kill -s SIGHUP alertmanager 2>/dev/null && echo "alertmanager перечитал конфиг"
+	@# Alertmanager по SIGHUP пишет в лог "конфигурация загружена", но
+	@# маршруты остаются старыми. Пересоздаём контейнер целиком — заглушки
+	@# и история уведомлений лежат на диске и переживают это спокойно.
+	@cd hub && docker compose up -d --force-recreate alertmanager
 
 prepare: render ## Создать каталоги данных с правильными владельцами
 	@mkdir -p hub/data/victoriametrics hub/data/vmagent hub/data/alertmanager hub/data/grafana

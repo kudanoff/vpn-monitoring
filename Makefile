@@ -31,8 +31,8 @@ sync-nodes:    ## Собрать targets/nodes-<проект>.yml из API па�
 deploy:        ## Раскатать агент на ноды: make deploy [LIMIT=nl-3]
 	cd ansible && ansible-playbook -i inventory.yml playbook.yml $(if $(LIMIT),--limit $(LIMIT),)
 
-test-alert:    ## Проверить доставку алертов до телеграма
-	./scripts/test-alert.sh
+test-alert:    ## Проверить доставку алертов: make test-alert PROJECT=most
+	./scripts/test-alert.sh $(PROJECT)
 
 test-rule:     ## Проверить всю цепочку от правила до телеграма
 	./scripts/test-rule.sh

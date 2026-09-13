@@ -41,8 +41,8 @@ test-alert:    ## Проверить доставку алертов: make test-
 test-rule:     ## Проверить всю цепочку от правила до телеграма
 	./scripts/test-rule.sh
 
-check:         ## Проверить, что конфиги валидны и цели скрейпятся
-	cd hub && docker compose exec vmagent wget -qO- http://localhost:8429/api/v1/targets | head -50
+check:         ## Сквозная проверка: сбор, правила, алерты, доставка
+	./scripts/selfcheck.sh
 
 backup:        ## Снять слепок для переезда
 	tar czf ../vpnmon-backup-$$(date +%F).tar.gz --exclude=hub/data/victoriametrics .

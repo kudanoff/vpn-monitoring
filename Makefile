@@ -1,4 +1,4 @@
-.PHONY: up prepare up-nodes down logs restart deploy render sync-nodes test-alert test-rule check backup
+.PHONY: up prepare up-nodes down logs restart deploy render sync-nodes test-alert test-rule test-mode-on test-mode-off check backup
 
 up: prepare    ## Поднять хаб (первый этап: метрики панели + пробники)
 	cd hub && docker compose up -d --build
@@ -37,6 +37,12 @@ deploy:        ## Раскатать агент на ноды: make deploy [LIMI
 
 test-alert:    ## Проверить доставку алертов: make test-alert PROJECT=most
 	./scripts/test-alert.sh $(PROJECT)
+
+test-mode-on:  ## Ускорить все алерты до минуты (для проверок)
+	./scripts/test-mode.sh on
+
+test-mode-off: ## Вернуть боевые пороги
+	./scripts/test-mode.sh off
 
 test-rule:     ## Проверить всю цепочку от правила до телеграма
 	./scripts/test-rule.sh

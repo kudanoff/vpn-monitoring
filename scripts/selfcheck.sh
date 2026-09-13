@@ -21,7 +21,7 @@ say_warn() { echo "  ⚠️  $1"; }
 q() {  # PromQL-запрос к VictoriaMetrics, возвращает первое значение
   docker run --rm --network "$NET" curlimages/curl:latest -s -G \
     'http://victoriametrics:8428/api/v1/query' --data-urlencode "query=$1" 2>/dev/null \
-    | grep -o '"value":\[[^]]*\]' | head -1 | grep -o '"[0-9.e+-]*"$' | tr -d '"'
+    | grep -o '"value":\[[^]]*\]' | head -1 | sed 's/.*,"\([^"]*\)"\]/\1/'
 }
 
 api() { docker run --rm --network "$NET" curlimages/curl:latest -s "$1" 2>/dev/null; }
@@ -39,8 +39,9 @@ done
 
 echo
 echo "═══ 2. Сбор метрик ═══"
-down=$(api 'http://vmagent:8429/api/v1/targets' | grep -o '"health":"[^"]*"' | grep -c 'down')
-total=$(api 'http://vmagent:8429/api/v1/targets' | grep -c '"scrapeUrl"')
+targets=$(api 'http://vmagent:8429/api/v1/targets')
+down=$(echo "$targets" | grep -o '"health":"[^"]*"' | grep -c 'down')
+total=$(echo "$targets" | grep -o '"scrapeUrl"' | wc -l | tr -d ' ')
 [[ "${down:-0}" -eq 0 ]] && say_ok "все цели скрейпятся ($total)" || say_bad "недоступных целей: $down из $total"
 
 for p in $PROJECTS; do

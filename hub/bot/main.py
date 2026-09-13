@@ -39,6 +39,11 @@ IGNORE_RE = re.compile(os.getenv("NODES_IGNORE", r"archive|ipcheker"), re.IGNORE
 # Один хаб обслуживает несколько проектов. Бот показывает только свой:
 # у каждого проекта свой бот, свой чат и свои дежурные.
 PROJECT = os.getenv("PROJECT", "")
+# Нарастающие паузы между напоминаниями, в минутах. Первое сообщение уходит
+# сразу, дальше по этому списку; когда он кончится, повторяется последнее
+# значение. Alertmanager так не умеет — у него интервал фиксированный, —
+# поэтому он будит бота ежеминутно, а бот решает, пора ли писать.
+REPEAT_STEPS = [int(x) for x in os.getenv("REPEAT_STEPS", "3,5,8,10,30,60").split(",") if x.strip()]
 ALERTMANAGER_URL = os.getenv("ALERTMANAGER_URL", "http://alertmanager:9093")
 HEALTHCHECKS_URL = os.getenv("HEALTHCHECKS_URL", "")
 
@@ -293,15 +298,56 @@ async def cmd_unmute(message: Message, command: CommandObject) -> None:
 # Входящие вебхуки
 # ─────────────────────────────────────────────────────────────────────────
 
+# Состояние эскалации по группам алертов. В памяти: после перезапуска бота
+# отсчёт начнётся заново, и это правильнее, чем молчать из-за потерянного
+# состояния.
+_escalation: dict[str, dict] = {}
+
+
+async def _send(text: str) -> None:
+    try:
+        await bot.send_message(CHAT_ID, text)
+    except Exception as exc:
+        log.error("не отправился алерт: %s", exc)
+
+
 async def handle_alerts(request: web.Request) -> web.Response:
-    """Алерты от Alertmanager."""
+    """
+    Алерты от Alertmanager. Он стучится часто, а решение "напоминать или
+    промолчать" принимается здесь — по нарастающим паузам REPEAT_STEPS.
+    """
     payload = await request.json()
-    text = render.alert_group(payload)
-    if text:
-        try:
-            await bot.send_message(CHAT_ID, text)
-        except Exception as exc:
-            log.error("не отправился алерт: %s", exc)
+    alerts = payload.get("alerts", [])
+    firing = [a for a in alerts if a.get("status") == "firing"]
+    key = payload.get("groupKey") or str(sorted(payload.get("groupLabels", {}).items()))
+    now = time.time()
+
+    if not firing:
+        # Проблема ушла: сообщаем и забываем историю напоминаний, чтобы
+        # следующая авария начиналась с чистого листа.
+        _escalation.pop(key, None)
+        text = render.alert_group(payload)
+        if text:
+            await _send(text)
+        return web.Response(text="ok")
+
+    # Состав группы — часть опознавательного знака: если к аварии добавилась
+    # ещё одна нода, это новая ситуация, а не продолжение старой.
+    sig = tuple(sorted(a.get("fingerprint", "") for a in firing))
+    state = _escalation.get(key)
+
+    if state is None or state["sig"] != sig:
+        _escalation[key] = {"sig": sig, "since": now, "last": now, "step": 0}
+        await _send(render.alert_group(payload))
+        return web.Response(text="ok")
+
+    pause = REPEAT_STEPS[min(state["step"], len(REPEAT_STEPS) - 1)] * 60
+    if now - state["last"] < pause:
+        return web.Response(text="ok")  # ещё рано напоминать
+
+    state["last"] = now
+    state["step"] += 1
+    await _send(render.alert_group(payload, since=now - state["since"]))
     return web.Response(text="ok")
 
 

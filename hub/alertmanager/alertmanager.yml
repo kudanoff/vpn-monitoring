@@ -8,8 +8,10 @@ route:
   # это разница между "видно суть" и "отключил уведомления".
   group_by: [alertname, project]
   group_wait: 30s
-  group_interval: 5m
-  repeat_interval: 4h
+  # Напоминания раскладывает бот по нарастающим паузам, поэтому Alertmanager
+  # будит его ежеминутно, а не решает сам, когда повторять.
+  group_interval: 1m
+  repeat_interval: 1m
 
   routes:
     # Архивные и служебные ноды выключены в панели намеренно — алерты по ним
@@ -21,13 +23,12 @@ route:
     - receiver: bot-most
       matchers: ['project = "most"']
       group_wait: 30s
-      group_interval: 5m
-      repeat_interval: 4h
+      group_interval: 1m
+      repeat_interval: 1m
       routes:
         - receiver: bot-most
           matchers: [severity = "critical"]
           group_wait: 10s
-          repeat_interval: 1h
 
     # Сторож ходит отдельным маршрутом и редко.
     - receiver: bot-watchdog
@@ -39,7 +40,6 @@ route:
     - receiver: bot
       matchers: [severity = "critical"]
       group_wait: 10s
-      repeat_interval: 1h
 
 # Подавление шума: если сервер лёг целиком, нет смысла отдельно сообщать,
 # что на нём кончился процессор и пропал агент.

@@ -141,7 +141,18 @@ def node_card(name: str, s: dict) -> str:
     )
 
 
-def alert_group(payload: dict) -> str:
+def duration(seconds: float) -> str:
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"{minutes} мин"
+    hours, rest = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours} ч {rest} мин" if rest else f"{hours} ч"
+    days, rest_h = divmod(hours, 24)
+    return f"{days} д {rest_h} ч"
+
+
+def alert_group(payload: dict, since: float | None = None) -> str:
     """
     Одно сообщение на группу алертов. Двадцать четыре письма про одно и то же
     событие читать никто не станет, а значит и аварию в них не разглядит.
@@ -150,7 +161,8 @@ def alert_group(payload: dict) -> str:
     if not alerts:
         return ""
     if len(alerts) == 1:
-        return alert_message(alerts[0])
+        text = alert_message(alerts[0])
+        return text + (f"\n<i>длится {duration(since)}</i>" if since else "")
 
     resolved = all(a.get("status") == "resolved" for a in alerts)
     first = alerts[0]
@@ -170,6 +182,8 @@ def alert_group(payload: dict) -> str:
     action = first.get("labels", {}).get("action")
     if action and not resolved:
         lines += ["", f"👉 <i>{action}</i>"]
+    if since:
+        lines += [f"<i>длится {duration(since)}</i>"]
 
     return "\n".join(lines)
 

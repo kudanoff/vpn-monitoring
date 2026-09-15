@@ -152,6 +152,31 @@ def duration(seconds: float) -> str:
     return f"{days} д {rest_h} ч"
 
 
+def node_not_found(query: str, names: list[str]) -> str:
+    """Промах по имени. Показываем, из чего выбирать, — искать самому негде."""
+    if not names:
+        return f"Нода <b>{query}</b> не найдена, и списка нод сейчас нет."
+    head = "Похоже на" if len(names) < 10 else "Есть ноды"
+    listed = "\n".join(f"  • <code>{'&quot;' + n + '&quot;' if ' ' in n else n}</code>" for n in names[:20])
+    tail = "\n  …" if len(names) > 20 else ""
+    return (f"Нода <b>{query}</b> не найдена.\n{head}:\n{listed}{tail}\n\n"
+            "<i>Имя с пробелами берите в кавычки.</i>")
+
+
+def mute_list(rows: list[dict], kinds: dict[str, tuple[str, str]]) -> str:
+    """Что сейчас молчит и сколько ещё будет молчать."""
+    if not rows:
+        return "🔔 Заглушек нет, слышно всё."
+    lines = ["<b>Заглушено</b>", ""]
+    for r in sorted(rows, key=lambda x: (x["kind"], x["node"] or "")):
+        icon, what = kinds.get(r["kind"], ("🔇", "молчит"))
+        by = f" · {r['by']}" if r.get("by") else ""
+        lines.append(f"{icon} <b>{r['node']}</b> — {what}\n"
+                     f"    ещё {duration(r['left'])}{by}")
+    lines += ["", "<i>Снять: /unmute &lt;имя&gt;</i>"]
+    return "\n".join(lines)
+
+
 def alert_group(payload: dict, since: float | None = None) -> str:
     """
     Одно сообщение на группу алертов. Двадцать четыре письма про одно и то же

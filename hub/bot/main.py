@@ -34,12 +34,22 @@ TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
 ADMINS = {int(x) for x in os.getenv("TELEGRAM_ADMINS", "").replace(" ", "").split(",") if x}
 WEBHOOK_SECRET = os.getenv("REMNAWAVE_WEBHOOK_SECRET", "")
-# Ноды, которые не нужно показывать и по которым не нужно алертить:
-# архивные, тестовые, служебные. Регулярное выражение по имени из панели.
-IGNORE_RE = re.compile(os.getenv("NODES_IGNORE", r"archive|ipcheker"), re.IGNORECASE)
+# Служебные ноды, которые в панели включены, но в сводке не нужны.
+# Регулярное выражение по имени. Выключенные в панели ноды сюда вписывать
+# не нужно — их бот узнаёт у самой панели.
+_ignore = os.getenv("NODES_IGNORE", r"ipcheker")
+# Пустой шаблон совпал бы с любым именем и спрятал все ноды разом.
+IGNORE_RE = re.compile(_ignore, re.IGNORECASE) if _ignore else None
 # Один хаб обслуживает несколько проектов. Бот показывает только свой:
 # у каждого проекта свой бот, свой чат и свои дежурные.
 PROJECT = os.getenv("PROJECT", "")
+# Откуда брать список выключенных нод: тот же API, что у sync-nodes.sh.
+_PU = PROJECT.upper().replace("-", "_")
+PANEL_API_URL = os.getenv(f"PANEL_API_URL_{_PU}", "")
+PANEL_COOKIE = os.getenv(f"PANEL_COOKIE_{_PU}", "")
+PANEL_TOKEN_FILE = f"/etc/secrets/panel_api_token_{PROJECT}"
+PANEL_POLL_SECONDS = 60
+VM_URL = os.getenv("VM_URL", "http://victoriametrics:8428")
 # Нарастающие паузы между напоминаниями, в минутах. Первое сообщение уходит
 # сразу, дальше по этому списку; когда он кончится, повторяется последнее
 # значение. Alertmanager так не умеет — у него интервал фиксированный, —
@@ -65,6 +75,91 @@ DEFAULT_HOURS = {"full": 2.0, "link": 24.0 * 7}
 
 bot = Bot(TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Выключенные в панели ноды
+# ─────────────────────────────────────────────────────────────────────────
+
+# Выключенная в панели нода выведена из работы намеренно: её связь с панелью
+# рвётся по определению, и алерты по ней — ложные тревоги. Раньше такие ноды
+# узнавали по слову archive в имени; теперь спрашиваем панель напрямую.
+# Бот пишет признак в VictoriaMetrics, правило NodeDisabledInPanel поднимает
+# по нему тихий алерт, а Alertmanager глушит им все прочие алерты ноды.
+_disabled: set[str] = set()
+
+
+def hidden(node: str) -> bool:
+    """Нода, которую не показываем в сводке: выключена в панели или служебная."""
+    return node in _disabled or bool(IGNORE_RE and IGNORE_RE.search(node))
+
+
+def _label(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+
+
+async def fetch_panel_nodes(session: aiohttp.ClientSession) -> list[dict]:
+    with open(PANEL_TOKEN_FILE) as f:
+        token = f.read().strip()
+    headers = {"Authorization": f"Bearer {token}"}
+    if PANEL_COOKIE:
+        headers["Cookie"] = PANEL_COOKIE
+    async with session.get(f"{PANEL_API_URL.rstrip('/')}/api/nodes", headers=headers,
+                           timeout=aiohttp.ClientTimeout(total=20)) as r:
+        if r.status != 200:
+            raise RuntimeError(f"API панели ответил кодом {r.status}")
+        body = await r.json(content_type=None)
+    # Разные версии панели заворачивают список по-разному — как в sync-nodes.sh.
+    resp = body.get("response", body) if isinstance(body, dict) else body
+    if isinstance(resp, dict):
+        resp = resp.get("nodes")
+    return resp if isinstance(resp, list) else []
+
+
+async def push_disabled(session: aiohttp.ClientSession, names: list[str]) -> None:
+    """
+    Признак пишется по каждой ноде, нулём или единицей. Включённую ноду
+    нужно явно обнулить: иначе единица провисит в базе ещё пять минут
+    и всё это время будет глушить настоящие алерты.
+    """
+    lines = [
+        f'vpnmon_node_disabled{{project="{_label(PROJECT)}",node="{_label(n)}"}} '
+        f"{1 if n in _disabled else 0}"
+        for n in names
+    ]
+    if not lines:
+        return
+    async with session.post(f"{VM_URL}/api/v1/import/prometheus", data="\n".join(lines) + "\n",
+                            timeout=aiohttp.ClientTimeout(total=15)) as r:
+        if r.status >= 300:
+            raise RuntimeError(f"VictoriaMetrics ответила {r.status}: {await r.text()}")
+
+
+async def watch_panel() -> None:
+    """
+    Раз в минуту сверяемся с панелью. Если панель недоступна, помним прошлый
+    список, но в базу его не пишем: признак через несколько минут устареет,
+    и алерты по нодам снова пойдут. Лишний шум лучше молчания вслепую.
+    """
+    global _disabled
+    if not (PROJECT and PANEL_API_URL):
+        log.warning("PANEL_API_URL_%s не задан — выключенные в панели ноды не отслеживаются", _PU)
+        return
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                nodes = await fetch_panel_nodes(session)
+                if nodes:
+                    now = {n["name"] for n in nodes if n.get("name") and n.get("isDisabled")}
+                    if now != _disabled:
+                        log.info("выключены в панели: %s", ", ".join(sorted(now)) or "нет")
+                    _disabled = now
+                    await push_disabled(session, [n["name"] for n in nodes if n.get("name")])
+                else:
+                    log.warning("API панели вернул пустой список нод")
+            except Exception as exc:
+                log.warning("не удалось узнать у панели выключенные ноды: %s", exc)
+            await asyncio.sleep(PANEL_POLL_SECONDS)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -147,15 +242,15 @@ async def collect(session: aiohttp.ClientSession, detailed: bool = False) -> dic
                 state[field] = state[source]
                 state.setdefault("from_panel", set()).add(field)
 
-    # Отсекаем архивные и служебные ноды: они всегда "отключены" и,
-    # если их не убрать, сводка на две трети состоит из ложных тревог.
-    for name in [n for n in nodes if IGNORE_RE.search(n)]:
+    # Отсекаем выключенные в панели и служебные ноды: они всегда "отключены"
+    # и, если их не убрать, сводка на две трети состоит из ложных тревог.
+    for name in [n for n in nodes if hidden(n)]:
         del nodes[name]
 
     # Флаг страны и провайдер приходят от панели — подписываем ими карточки.
     try:
         for row in await instant(session, f"node:name_map{_p()}"):
-            if IGNORE_RE.search(row["node"]) or row["node"] not in nodes:
+            if row["node"] not in nodes:
                 continue
             meta = nodes[row["node"]]
             meta["flag"] = row.get("node_country_emoji", "")
@@ -166,6 +261,8 @@ async def collect(session: aiohttp.ClientSession, detailed: bool = False) -> dic
     # Ноды, которые есть в конфиге, но ещё ни разу не отдали метрик,
     # всё равно должны быть видны — иначе пропажу легко не заметить.
     for row in await instant(session, f'up{_p("job=~\"node.*\"")}'):
+        if hidden(row.get("node", "")):
+            continue
         meta = nodes.setdefault(row.get("node", "?"), {})
         meta.setdefault("hoster", row.get("hoster"))
         meta.setdefault("public_ip", row.get("public_ip"))
@@ -203,8 +300,8 @@ async def cmd_help(message: Message) -> None:
         "/unmute &lt;имя&gt; — вернуть звук\n\n"
         "<i>Срок: 30м, 2ч, 7д, 2н; по умолчанию 2 ч и 7 д соответственно.\n"
         "Имя с пробелами — в кавычках: /mute \"DE Frankfurt 1\" 3ч</i>\n\n"
-        "<i>Архивные и служебные ноды скрыты. Список задаётся "
-        "переменной NODES_IGNORE в .env</i>"
+        "<i>Выключенные в панели ноды скрыты, алерты по ним не приходят. "
+        "Служебные ноды прячет переменная NODES_IGNORE в .env</i>"
     )
 
 
@@ -400,7 +497,7 @@ async def known_nodes(session: aiohttp.ClientSession) -> list[str]:
         except Exception as exc:
             log.warning("не удалось получить список нод: %s", exc)
             continue
-        names |= {r["node"] for r in rows if r.get("node") and not IGNORE_RE.search(r["node"])}
+        names |= {r["node"] for r in rows if r.get("node") and not hidden(r["node"])}
     return sorted(names)
 
 
@@ -661,6 +758,16 @@ async def handle_remnawave(request: web.Request) -> web.Response:
         "node.disabled": f"⏸ <b>{node}</b> — нода выключена в панели",
         "node.enabled": f"▶️ <b>{node}</b> — нода включена в панели",
     }
+    # Отмечаем сразу, не дожидаясь опроса: следом за node.disabled панель
+    # присылает потерю связи, и её уже надо промолчать.
+    if name == "node.disabled":
+        _disabled.add(node)
+    elif name == "node.enabled":
+        _disabled.discard(node)
+    elif name in LINK_EVENTS and node in _disabled:
+        log.info("вебхук %s по выключенной ноде %s пропущен", name, node)
+        return web.Response(text="ok")
+
     if name in texts:
         # Вебхук приходит напрямую от панели, Alertmanager его не видит —
         # значит и заглушку по ноде здесь нужно проверить самим.
@@ -716,6 +823,8 @@ async def run_web() -> None:
 
 async def main() -> None:
     await run_web()
+    # Ссылку держим, иначе сборщик мусора может прибить задачу на ходу.
+    watcher = asyncio.create_task(watch_panel())  # noqa: F841
 
     # Неверный токен — единственная причина, по которой стартовать бессмысленно.
     # Говорим об этом одной понятной строкой, а не трейсбеком на весь экран.

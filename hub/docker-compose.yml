@@ -98,6 +98,9 @@ services:
       VM_URL: http://victoriametrics:8428
       ALERTMANAGER_URL: http://alertmanager:9093
       PROJECT: ${PROJECT_ID:-main}
+    volumes:
+      # Токен API панели: по нему бот узнаёт, какие ноды выключены.
+      - ./secrets:/etc/secrets:ro
     ports:
       # Наружу не торчит: слушаем только на приватном интерфейсе,
       # сюда стучится Remnawave своими вебхуками.
@@ -117,6 +120,8 @@ services:
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID_MOST}
       TELEGRAM_ADMINS: ${TELEGRAM_ADMINS_MOST:-}
       REMNAWAVE_WEBHOOK_SECRET: ${REMNAWAVE_WEBHOOK_SECRET_MOST:-}
+    volumes:
+      - ./secrets:/etc/secrets:ro
     ports:
       - "${HUB_PRIVATE_IP:-127.0.0.1}:8081:8080"
     depends_on: [victoriametrics, alertmanager]

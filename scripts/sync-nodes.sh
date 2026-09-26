@@ -36,7 +36,7 @@ proj_env() { read_env "${1}_${PU}"; }
 
 API_URL="$(proj_env PANEL_API_URL)"
 [[ -n "$API_URL" ]] || { echo "задайте PANEL_API_URL_${PU} в hub/.env (например https://panel.example.com)"; exit 1; }
-IGNORE="$(proj_env NODES_IGNORE)"; IGNORE="${IGNORE:-$(read_env NODES_IGNORE)}"; IGNORE="${IGNORE:-archive|ipcheker}"
+IGNORE="$(proj_env NODES_IGNORE)"; IGNORE="${IGNORE:-$(read_env NODES_IGNORE)}"; IGNORE="${IGNORE:-ipcheker}"
 XRAY_PORT="$(proj_env DEFAULT_XRAY_PORT)"; XRAY_PORT="${XRAY_PORT:-443}"
 COOKIE="$(proj_env PANEL_COOKIE)"
 OVERRIDES="$ROOT/targets/port-overrides-${PROJECT}.conf"

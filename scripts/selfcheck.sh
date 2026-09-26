@@ -47,6 +47,9 @@ total=$(echo "$targets" | grep -o '"scrapeUrl"' | wc -l | tr -d ' ')
 for p in $PROJECTS; do
   n=$(q "count(remnawave_node_status{project=\"$p\"})")
   [[ -n "$n" && "$n" != "0" ]] && say_ok "панель $p отдаёт метрики ($n нод)" || say_bad "панель $p: метрик нет"
+  d=$(q "count(vpnmon_node_disabled{project=\"$p\"})")
+  [[ -n "$d" && "$d" != "0" ]] && say_ok "бот $p сверяется с панелью ($(q "sum(vpnmon_node_disabled{project=\"$p\"})") выключено)" \
+    || say_bad "бот $p не знает, какие ноды выключены: алерты по ним не глушатся (make logs)"
   pr=$(q "count(probe_success{project=\"$p\"})")
   [[ -n "$pr" && "$pr" != "0" ]] && say_ok "проверки доступности $p ($pr)" || say_warn "проверки $p не идут — пуст список нод?"
 done

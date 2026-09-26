@@ -14,10 +14,15 @@ route:
   repeat_interval: 1m
 
   routes:
-    # Архивные и служебные ноды выключены в панели намеренно — алерты по ним
-    # это ложные тревоги. Держите этот список в согласии с NODES_IGNORE в .env.
+    # Служебные ноды — алерты по ним это ложные тревоги. Держите этот список
+    # в согласии с NODES_IGNORE в .env. Выключенные в панели ноды сюда
+    # вписывать не нужно: их глушит NodeDisabledInPanel, см. inhibit_rules.
     - receiver: blackhole
-      matchers: ['node =~ "(?i).*(archive|ipcheker).*"']
+      matchers: ['node =~ "(?i).*ipcheker.*"']
+
+    # Служебные алерты, которые нужны только для подавления других.
+    - receiver: blackhole
+      matchers: [severity = "silent"]
 
     # У каждого проекта свой бот и свой чат.
     - receiver: bot-most
@@ -44,6 +49,11 @@ route:
 # Подавление шума: если сервер лёг целиком, нет смысла отдельно сообщать,
 # что на нём кончился процессор и пропал агент.
 inhibit_rules:
+  # Нода выключена в панели — по ней молчит всё.
+  - source_matchers: [alertname = "NodeDisabledInPanel"]
+    target_matchers: [alertname != "NodeDisabledInPanel"]
+    equal: [project, node]
+
   - source_matchers: [alertname = "NodeDown"]
     target_matchers: [severity =~ "warning|info"]
     equal: [node]

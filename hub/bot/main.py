@@ -68,6 +68,8 @@ LINK_EVENTS = {"node.connection_lost", "node.connection_restored"}
 MUTE_KINDS = {
     "full": ("🔇", "молчит всё"),
     "link": ("🔀", "молчат только разрывы связи"),
+    # Пауза по кнопке под сообщением — молчит ровно один алерт.
+    "pause": ("⏸", "пауза по алерту"),
     # Заглушка, поставленная руками через amtool на какой-то другой алерт.
     "other": ("🔕", "молчит часть алертов"),
 }
@@ -275,7 +277,15 @@ async def collect(session: aiohttp.ClientSession, detailed: bool = False) -> dic
 # ─────────────────────────────────────────────────────────────────────────
 
 def allowed(message: Message) -> bool:
-    return not ADMINS or message.from_user.id in ADMINS
+    return allowed_user(message.from_user.id)
+
+
+def allowed_user(user_id: int) -> bool:
+    return not ADMINS or user_id in ADMINS
+
+
+def _author(user) -> str:
+    return user.username or str(user.id)
 
 
 def kb(full: bool = False) -> InlineKeyboardMarkup:
@@ -298,6 +308,9 @@ async def cmd_help(message: Message) -> None:
         "/mutelink &lt;имя&gt; [срок] — заглушить только разрывы связи\n"
         "/mutes — что сейчас заглушено\n"
         "/unmute &lt;имя&gt; — вернуть звук\n\n"
+        "<i>Под каждым сообщением об аварии есть кнопки паузы: 2 часа, 8 часов, "
+        "24 часа, 2 дня. Пауза останавливает напоминания только об этой проблеме; "
+        "кнопка «Продолжить уведомлять» снимает её и начинает цикл заново.</i>\n\n"
         "<i>Срок: 30м, 2ч, 7д, 2н; по умолчанию 2 ч и 7 д соответственно.\n"
         "Имя с пробелами — в кавычках: /mute \"DE Frankfurt 1\" 3ч</i>\n\n"
         "<i>Выключенные в панели ноды скрыты, алерты по ним не приходят. "
@@ -373,17 +386,46 @@ def _fmt_ts(ts: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(ts))
 
 
-def _matchers(node: str, kind: str) -> list[dict]:
-    m = [{"name": "node", "value": node, "isRegex": False, "isEqual": True}]
+def _eq(name: str, value: str, regex: bool = False) -> dict:
+    return {"name": name, "value": value, "isRegex": regex, "isEqual": True}
+
+
+def _matchers(node: str | None, kind: str, alertname: str | None = None) -> list[dict]:
+    m = [_eq("node", node)] if node else []
     # Alertmanager один на все проекты, а имена нод в разных панелях
     # совпадают. Без этого матчера заглушка в одном проекте затыкает
     # одноимённую ноду в соседнем.
     if PROJECT:
-        m.append({"name": "project", "value": PROJECT, "isRegex": False, "isEqual": True})
-    if kind == "link":
-        m.append({"name": "alertname", "value": "|".join(LINK_ALERTS),
-                  "isRegex": True, "isEqual": True})
+        m.append(_eq("project", PROJECT))
+    if alertname:
+        m.append(_eq("alertname", alertname))          # пауза по кнопке — один алерт
+    elif kind == "link":
+        m.append(_eq("alertname", "|".join(LINK_ALERTS), regex=True))
     return m
+
+
+async def add_silence(session: aiohttp.ClientSession, node: str | None, hours: float,
+                      kind: str, author: str, alertname: str | None = None,
+                      comment: str = "") -> str | None:
+    """Ставит заглушку и возвращает её id. None — если Alertmanager отказал."""
+    now = time.time()
+    payload = {
+        "matchers": _matchers(node, kind, alertname),
+        "startsAt": _fmt_ts(now),
+        "endsAt": _fmt_ts(now + hours * 3600),
+        "createdBy": author,
+        "comment": comment or f"mute:{kind} — заглушено из телеграма",
+    }
+    async with session.post(f"{ALERTMANAGER_URL}/api/v2/silences", json=payload) as r:
+        body = await r.text()
+        if r.status >= 300:
+            log.warning("Alertmanager не принял заглушку: %s", body)
+            return None
+    _mute_cache["at"] = 0.0  # чтобы вебхуки панели замолчали сразу
+    try:
+        return json.loads(body).get("silenceID") or None
+    except ValueError:
+        return None
 
 
 async def fetch_mutes(session: aiohttp.ClientSession) -> list[dict]:
@@ -391,7 +433,7 @@ async def fetch_mutes(session: aiohttp.ClientSession) -> list[dict]:
     async with session.get(f"{ALERTMANAGER_URL}/api/v2/silences") as r:
         items = await r.json()
     return [s for s in items
-            if s.get("status", {}).get("state") == "active" and mute_node(s)]
+            if s.get("status", {}).get("state") == "active" and mute_label(s)]
 
 
 def mute_node(silence: dict) -> str | None:
@@ -405,6 +447,19 @@ def mute_node(silence: dict) -> str | None:
     return node
 
 
+def mute_label(silence: dict) -> str | None:
+    """Чем подписать заглушку в списке: нодой, а если её нет — именем алерта."""
+    if mute_node(silence):
+        return mute_node(silence)
+    if PROJECT and not any(m.get("name") == "project" and m.get("value") == PROJECT
+                           for m in silence.get("matchers", [])):
+        return None
+    for m in silence.get("matchers", []):
+        if m.get("name") == "alertname":
+            return m.get("value")
+    return None
+
+
 def mute_kind(silence: dict) -> str:
     """
     Заглушка без матчера по alertname глушит по ноде всё — это full.
@@ -414,8 +469,28 @@ def mute_kind(silence: dict) -> str:
     for m in silence.get("matchers", []):
         if m.get("name") != "alertname":
             continue
+        if not m.get("isRegex"):
+            return "pause"                      # пауза по одному алерту, кнопкой
         return "link" if any(a in (m.get("value") or "") for a in LINK_ALERTS) else "other"
     return "full"
+
+
+def mute_alertname(silence: dict) -> str:
+    """Имя алерта у паузы — чтобы в списке было видно, что именно молчит."""
+    for m in silence.get("matchers", []):
+        if m.get("name") == "alertname" and not m.get("isRegex"):
+            return m.get("value") or ""
+    return ""
+
+
+def mute_covers(silence: dict, kind: str) -> bool:
+    """Накрывает ли заглушка событие этого рода (для вебхуков панели)."""
+    k = mute_kind(silence)
+    if k == "full":
+        return True
+    if kind != "link":
+        return False
+    return k == "link" or (k == "pause" and mute_alertname(silence) in LINK_ALERTS)
 
 
 # Список заглушек нужен на каждый вебхук от панели, а меняется он редко —
@@ -434,8 +509,7 @@ async def muted(session: aiohttp.ClientSession, node: str, kind: str) -> bool:
             # Молчать из-за недоступного Alertmanager хуже, чем лишний раз шумнуть.
             log.warning("не удалось получить заглушки: %s", exc)
             return False
-    return any(mute_node(s) == node and mute_kind(s) in (("full", "link") if kind == "link" else ("full",))
-               for s in _mute_cache["items"])
+    return any(mute_node(s) == node and mute_covers(s, kind) for s in _mute_cache["items"])
 
 
 # ── разбор аргументов ────────────────────────────────────────────────────
@@ -538,29 +612,15 @@ async def do_mute(message: Message, args: str, kind: str) -> None:
             await message.answer(render.node_not_found(args, hint))
             return
         hours = hours or DEFAULT_HOURS[kind]
-        now = time.time()
-        payload = {
-            "matchers": _matchers(node, kind),
-            "startsAt": _fmt_ts(now),
-            "endsAt": _fmt_ts(now + hours * 3600),
-            "createdBy": message.from_user.username or str(message.from_user.id),
-            "comment": f"mute:{kind} — заглушено из телеграма",
-        }
-        async with session.post(f"{ALERTMANAGER_URL}/api/v2/silences", json=payload) as r:
-            ok, body = r.status < 300, await r.text()
+        sid = await add_silence(session, node, hours, kind, _author(message.from_user))
 
-    if not ok:
-        await message.answer(f"Не вышло заглушить: {body}")
+    if not sid:
+        await message.answer("Не вышло заглушить: Alertmanager отказал, подробности в логе бота")
         return
 
-    _mute_cache["at"] = 0.0  # чтобы вебхуки панели замолчали сразу
-    try:
-        sid = json.loads(body).get("silenceID", "")
-    except ValueError:
-        sid = ""
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="🔔 Вернуть звук", callback_data=f"unmute:{sid}")
-    ]]) if sid else None
+    ]])
     tail = ("Остальное по ноде — упавший сервер, диск, блокировка из РФ — приходит как обычно."
             if kind == "link" else "Про эту ноду не придёт ничего, включая аварии.")
     await message.answer(
@@ -594,8 +654,9 @@ async def cmd_mutes(message: Message) -> None:
             await message.answer(f"Alertmanager не ответил: {exc}")
             return
     rows = [{
-        "node": mute_node(s),
+        "node": mute_label(s),
         "kind": mute_kind(s),
+        "alert": mute_alertname(s),
         "left": _left(s),
         "by": s.get("createdBy", ""),
     } for s in items]
@@ -612,10 +673,10 @@ def _left(silence: dict) -> float:
 
 
 async def drop_mutes(session: aiohttp.ClientSession, node: str | None = None,
-                     silence_id: str | None = None) -> int:
+                     silence_ids: list[str] | None = None) -> int:
     removed = 0
     for s in await fetch_mutes(session):
-        if silence_id and s.get("id") != silence_id:
+        if silence_ids is not None and s.get("id") not in silence_ids:
             continue
         if node and mute_node(s) != node:
             continue
@@ -652,12 +713,128 @@ async def cb_unmute(call: CallbackQuery) -> None:
         await call.answer("Нет прав", show_alert=True)
         return
     async with aiohttp.ClientSession() as session:
-        removed = await drop_mutes(session, silence_id=call.data.split(":", 1)[1])
+        removed = await drop_mutes(session, silence_ids=[call.data.split(":", 1)[1]])
     await call.answer("Звук вернулся" if removed else "Заглушка уже снята")
     try:
         await call.message.edit_text("🔔 Заглушка снята", reply_markup=None)
     except Exception:
         pass
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Кнопки паузы под сообщением об аварии
+# ─────────────────────────────────────────────────────────────────────────
+
+# Самый частый случай: проблема видна, руки до неё дойдут не сейчас, а
+# напоминания каждые несколько минут мешают работать. Кнопка ставит такую же
+# заглушку, как /mute, но ровно по этому алерту и этим нодам — всё остальное
+# по ним продолжает приходить.
+SNOOZE_STEPS = [(2, "2 часа"), (8, "8 часов"), (24, "24 часа"), (48, "2 дня")]
+
+# Что именно глушит кнопка. В callback_data помещается 64 байта, а имена нод
+# бывают длинные, поэтому там едет только короткий отпечаток группы алертов.
+# Отпечаток считается от groupKey: после перезапуска бота память пуста, но
+# первое же новое сообщение по той же аварии оживляет кнопки старого.
+_snoozes: dict[str, dict] = {}
+
+
+def snooze_token(key: str) -> str:
+    return hashlib.sha1(key.encode()).hexdigest()[:12]
+
+
+def snooze_buttons(token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=title, callback_data=f"zz:{token}:{hours}")
+        for hours, title in SNOOZE_STEPS
+    ]])
+
+
+def resume_button(token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🔔 Продолжить уведомлять", callback_data=f"zz-on:{token}")
+    ]])
+
+
+def remember_group(payload: dict, key: str) -> str:
+    """Запоминает, к чему относится сообщение, и возвращает его отпечаток."""
+    alerts = payload.get("alerts", [])
+    labels = payload.get("groupLabels", {})
+    alertname = labels.get("alertname") or (alerts[0].get("labels", {}).get("alertname") if alerts else "")
+    token = snooze_token(key)
+    _snoozes[token] = {
+        "key": key,
+        "alertname": alertname,
+        "nodes": sorted({a.get("labels", {}).get("node") for a in alerts
+                         if a.get("labels", {}).get("node")}),
+    }
+    return token
+
+
+async def cb_context(call: CallbackQuery, prefix: str) -> dict | None:
+    if not allowed_user(call.from_user.id):
+        await call.answer("Нет прав", show_alert=True)
+        return None
+    ctx = _snoozes.get(call.data[len(prefix):].split(":")[0])
+    if ctx is None:
+        # Бота перезапустили, а сообщение осталось. Врать кнопкой нельзя:
+        # человек решит, что пауза поставлена, и пропустит аварию.
+        await call.answer("Кнопка от старого сообщения: бота перезапускали, и чему она "
+                          "соответствует, он уже не помнит. Поставить паузу — /mute, "
+                          "снять — /unmute, посмотреть — /mutes", show_alert=True)
+    return ctx
+
+
+@dp.callback_query(F.data.startswith("zz:"))
+async def cb_snooze(call: CallbackQuery) -> None:
+    ctx = await cb_context(call, "zz:")
+    if ctx is None:
+        return
+    hours = float(call.data.rsplit(":", 1)[1])
+    token = snooze_token(ctx["key"])
+
+    async with aiohttp.ClientSession() as session:
+        targets = ctx["nodes"] or [None]   # алерт без ноды глушим по имени
+        ids = [await add_silence(session, node, hours, "snooze", _author(call.from_user),
+                                 alertname=ctx["alertname"],
+                                 comment="пауза по кнопке под сообщением")
+               for node in targets]
+    ids = [i for i in ids if i]
+    if not ids:
+        await call.answer("Alertmanager не принял паузу, подробности в логе", show_alert=True)
+        return
+
+    ctx["silences"] = ids
+    ctx["text"] = call.message.html_text
+    # Цикл напоминаний начинается заново — и сейчас, и когда пауза кончится.
+    _escalation.pop(ctx["key"], None)
+
+    await call.answer(f"Пауза на {render.duration(hours * 3600)}")
+    try:
+        await call.message.edit_text(
+            f"{ctx['text']}\n\n⏸ <i>на паузе {render.duration(hours * 3600)}</i>",
+            reply_markup=resume_button(token),
+        )
+    except Exception as exc:
+        log.warning("не вышло обновить сообщение с паузой: %s", exc)
+
+
+@dp.callback_query(F.data.startswith("zz-on:"))
+async def cb_resume(call: CallbackQuery) -> None:
+    ctx = await cb_context(call, "zz-on:")
+    if ctx is None:
+        return
+    token = snooze_token(ctx["key"])
+
+    async with aiohttp.ClientSession() as session:
+        await drop_mutes(session, silence_ids=ctx.pop("silences", []))
+    _escalation.pop(ctx["key"], None)
+
+    await call.answer("Уведомления возобновлены")
+    try:
+        await call.message.edit_text(ctx.get("text") or call.message.html_text,
+                                     reply_markup=snooze_buttons(token))
+    except Exception as exc:
+        log.warning("не вышло вернуть кнопки: %s", exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -670,9 +847,9 @@ async def cb_unmute(call: CallbackQuery) -> None:
 _escalation: dict[str, dict] = {}
 
 
-async def _send(text: str) -> None:
+async def _send(text: str, keyboard: InlineKeyboardMarkup | None = None) -> None:
     try:
-        await bot.send_message(CHAT_ID, text)
+        await bot.send_message(CHAT_ID, text, reply_markup=keyboard)
     except Exception as exc:
         log.error("не отправился алерт: %s", exc)
 
@@ -692,6 +869,7 @@ async def handle_alerts(request: web.Request) -> web.Response:
         # Проблема ушла: сообщаем и забываем историю напоминаний, чтобы
         # следующая авария начиналась с чистого листа.
         _escalation.pop(key, None)
+        _snoozes.pop(snooze_token(key), None)
         text = render.alert_group(payload)
         if text:
             await _send(text)
@@ -704,7 +882,7 @@ async def handle_alerts(request: web.Request) -> web.Response:
 
     if state is None or state["sig"] != sig:
         _escalation[key] = {"sig": sig, "since": now, "last": now, "step": 0}
-        await _send(render.alert_group(payload))
+        await _send(render.alert_group(payload), snooze_buttons(remember_group(payload, key)))
         return web.Response(text="ok")
 
     pause = REPEAT_STEPS[min(state["step"], len(REPEAT_STEPS) - 1)] * 60
@@ -713,7 +891,8 @@ async def handle_alerts(request: web.Request) -> web.Response:
 
     state["last"] = now
     state["step"] += 1
-    await _send(render.alert_group(payload, since=now - state["since"]))
+    await _send(render.alert_group(payload, since=now - state["since"]),
+                snooze_buttons(remember_group(payload, key)))
     return web.Response(text="ok")
 
 

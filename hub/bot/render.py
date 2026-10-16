@@ -170,6 +170,8 @@ def mute_list(rows: list[dict], kinds: dict[str, tuple[str, str]]) -> str:
     lines = ["<b>Заглушено</b>", ""]
     for r in sorted(rows, key=lambda x: (x["kind"], x["node"] or "")):
         icon, what = kinds.get(r["kind"], ("🔇", "молчит"))
+        if r.get("alert"):
+            what = f"{what} {r['alert']}"
         by = f" · {r['by']}" if r.get("by") else ""
         lines.append(f"{icon} <b>{r['node']}</b> — {what}\n"
                      f"    ещё {duration(r['left'])}{by}")

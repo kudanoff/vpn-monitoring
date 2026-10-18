@@ -47,6 +47,10 @@ PROJECT = os.getenv("PROJECT", "")
 _PU = PROJECT.upper().replace("-", "_")
 PANEL_API_URL = os.getenv(f"PANEL_API_URL_{_PU}", "")
 PANEL_COOKIE = os.getenv(f"PANEL_COOKIE_{_PU}", "")
+# Домен панели для заголовка Host. Нужен, когда в API ходят по приватному
+# адресу: Remnawave 3.x смотрит на имя и на признаки обратного прокси, а по
+# голому http отвечает «Reverse proxy and HTTPS are required» и рвёт связь.
+PANEL_API_HOST = os.getenv(f"PANEL_API_HOST_{_PU}", "")
 PANEL_TOKEN_FILE = f"/etc/secrets/panel_api_token_{PROJECT}"
 PANEL_POLL_SECONDS = 60
 VM_URL = os.getenv("VM_URL", "http://victoriametrics:8428")
@@ -100,12 +104,28 @@ def _label(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
 
 
+def panel_proxy_headers() -> dict[str, str]:
+    """
+    Заголовки, без которых панель за обратным прокси не отвечает по приватной
+    сети. Домен берём из PANEL_API_HOST_<ПРОЕКТ>, остальное добавляем только
+    для http: по https панель и так считает запрос пришедшим как надо.
+    """
+    headers: dict[str, str] = {}
+    if PANEL_API_HOST:
+        headers["Host"] = PANEL_API_HOST
+    if PANEL_API_URL.startswith("http://"):
+        headers["X-Forwarded-Proto"] = "https"
+        headers["X-Forwarded-For"] = os.getenv("HUB_PRIVATE_IP", "10.77.0.1")
+    return headers
+
+
 async def fetch_panel_nodes(session: aiohttp.ClientSession) -> list[dict]:
     with open(PANEL_TOKEN_FILE) as f:
         token = f.read().strip()
     headers = {"Authorization": f"Bearer {token}"}
     if PANEL_COOKIE:
         headers["Cookie"] = PANEL_COOKIE
+    headers.update(panel_proxy_headers())
     async with session.get(f"{PANEL_API_URL.rstrip('/')}/api/nodes", headers=headers,
                            timeout=aiohttp.ClientTimeout(total=20)) as r:
         if r.status != 200:

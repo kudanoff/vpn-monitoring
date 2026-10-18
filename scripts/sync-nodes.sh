@@ -49,6 +49,17 @@ CURL_ARGS=(--http1.1 -sS -H "Authorization: Bearer ${TOKEN}")
 # Кука защиты обратного прокси, если она включена в панели.
 [[ -n "$COOKIE" ]] && CURL_ARGS+=(-H "Cookie: ${COOKIE}")
 
+# Ходить в API по приватному адресу надёжнее, чем через домен: не зависит от
+# Cloudflare и не светит токен наружу. Но Remnawave 3.x проверяет, что перед
+# ней прокси с HTTPS, и голый http обрывает молча — curl показывает это как
+# "Empty reply from server". Домен для Host задаётся PANEL_API_HOST_<ПРОЕКТ>.
+API_HOST="$(proj_env PANEL_API_HOST)"
+[[ -n "$API_HOST" ]] && CURL_ARGS+=(-H "Host: ${API_HOST}")
+if [[ "$API_URL" == http://* ]]; then
+  HUB_IP="$(read_env HUB_PRIVATE_IP)"
+  CURL_ARGS+=(-H "X-Forwarded-Proto: https" -H "X-Forwarded-For: ${HUB_IP:-10.77.0.1}")
+fi
+
 # Индивидуальные порты и исключения из проверки порта.
 OV_JSON='{}'
 if [[ -f "$OVERRIDES" ]]; then
@@ -71,8 +82,19 @@ RAW=$(cat "$BODY_FILE"); rm -f "$BODY_FILE"
 if [[ "$CODE" != "200" ]]; then
   echo "API ответил кодом ${CODE}."
   case "$CODE" in
-    000) echo "Соединение не установилось: проверьте PANEL_API_URL и доступность панели с хаба." ;;
-    401|403) echo "Не приняты доступы: проверьте токен в ${TOKEN_FILE} и PANEL_COOKIE в hub/.env." ;;
+    000)
+      echo "Ответа нет. Либо панель недоступна с хаба, либо она закрыла соединение:"
+      echo "Remnawave за обратным прокси требует Host и признак HTTPS —"
+      echo "задайте PANEL_API_HOST_${PU}=<домен панели> в hub/.env." ;;
+    401|403)
+      if grep -qi 'just a moment\|cf-browser-verification\|cloudflare' <<<"$RAW"; then
+        echo "Ответил не API, а Cloudflare: домен закрыт челленджем."
+        echo "Либо правило WAF → Skip для /api/*, либо ходите по приватному адресу:"
+        echo "  PANEL_API_URL_${PU}=http://<адрес панели в WireGuard>:3000"
+        echo "  PANEL_API_HOST_${PU}=<домен панели>"
+      else
+        echo "Не приняты доступы: проверьте токен в ${TOKEN_FILE} и PANEL_COOKIE в hub/.env."
+      fi ;;
     404) echo "Эндпоинт не найден: в вашей версии панели путь к списку нод может отличаться." ;;
   esac
   echo "Ответ:"; echo "$RAW" | head -c 400

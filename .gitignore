@@ -12,5 +12,6 @@ targets/nodes.yml
 # Настраивается под конкретную установку
 targets/port-overrides-*.conf
 targets/port-overrides.conf
+targets/public-ip-overrides-*.conf
 # Собирается render-scrape.sh из hub/vmagent/tpl/
 hub/vmagent/scrape.yml

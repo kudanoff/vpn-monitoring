@@ -86,7 +86,8 @@ PANEL_P2_API_URL=https://panel2.example.com
 `sync-nodes.sh` принимает проект аргументом и пишет свой файл:
 
 ```bash
-./scripts/sync-nodes.sh p2     # → targets/nodes-p2.yml, порты из port-overrides-p2.conf
+./scripts/sync-nodes.sh p2     # → targets/nodes-p2.yml, порты из port-overrides-p2.conf,
+                               #   реальные IP нод за NetBird из public-ip-overrides-p2.conf
 ```
 
 В cron — по строке на проект.

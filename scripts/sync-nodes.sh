@@ -40,8 +40,13 @@ IGNORE="$(proj_env NODES_IGNORE)"; IGNORE="${IGNORE:-$(read_env NODES_IGNORE)}";
 XRAY_PORT="$(proj_env DEFAULT_XRAY_PORT)"; XRAY_PORT="${XRAY_PORT:-443}"
 COOKIE="$(proj_env PANEL_COOKIE)"
 OVERRIDES="$ROOT/targets/port-overrides-${PROJECT}.conf"
-# Первый запуск: создаём файл исключений из образца, чтобы было что править.
+IP_OVERRIDES="$ROOT/targets/public-ip-overrides-${PROJECT}.conf"
+# Первый запуск: создаём файлы исключений из образцов, чтобы было что править.
 [[ -f "$OVERRIDES" ]] || cp "$ROOT/targets/port-overrides.conf.example" "$OVERRIDES" 2>/dev/null || true
+[[ -f "$IP_OVERRIDES" ]] || cp "$ROOT/targets/public-ip-overrides.conf.example" "$IP_OVERRIDES" 2>/dev/null || true
+# Диапазоны оверлейных сетей (NetBird, Tailscale): адрес ноды из них виден
+# только участникам этой сети, а хаб и клиенты в неё не входят.
+OVERLAY="$(proj_env OVERLAY_RANGES)"; OVERLAY="${OVERLAY:-$(read_env OVERLAY_RANGES)}"; OVERLAY="${OVERLAY:-100.64.0.0/10}"
 TOKEN="$(tr -d '\n\r' < "$TOKEN_FILE")"
 
 # --http1.1 намеренно: панели за nginx нередко рвут HTTP/2-поток на API.
@@ -60,19 +65,32 @@ if [[ "$API_URL" == http://* ]]; then
   CURL_ARGS+=(-H "X-Forwarded-Proto: https" -H "X-Forwarded-For: ${HUB_IP:-10.77.0.1}")
 fi
 
-# Индивидуальные порты и исключения из проверки порта.
-OV_JSON='{}'
-if [[ -f "$OVERRIDES" ]]; then
+# Файл вида "имя ноды = значение" → JSON-объект {имя: значение}.
+parse_conf() {
+  [[ -f "$1" ]] || { echo '{}'; return; }
   # grep без совпадений возвращает ошибку и с pipefail роняет всю цепочку,
   # а файл из одних комментариев — совершенно нормальное состояние.
-  PARSED=$({ grep -vE '^[[:space:]]*(#|$)' "$OVERRIDES" || true; } \
+  local parsed
+  parsed=$({ grep -vE '^[[:space:]]*(#|$)' "$1" || true; } \
     | sed -E 's/^[[:space:]]*//; s/[[:space:]]*$//' \
     | jq -R -s 'split("\n") | map(select(length>0))
         | map(capture("^(?<k>.+?)[[:space:]]*=[[:space:]]*(?<v>[^[:space:]]+)$"))
         | map({(.k): .v}) | add // {}' 2>/dev/null || true)
-  [[ -n "$PARSED" ]] && OV_JSON="$PARSED"
-  echo "Индивидуальные порты: $OV_JSON"
-fi
+  if [[ -n "$parsed" ]]; then echo "$parsed"; else echo '{}'; fi
+}
+
+# Индивидуальные порты и исключения из проверки порта.
+OV_JSON=$(parse_conf "$OVERRIDES")
+[[ "$OV_JSON" != '{}' ]] && echo "Индивидуальные порты: $OV_JSON"
+# Реальные IP нод, которые панель знает по адресу в оверлейной сети.
+IP_JSON=$(parse_conf "$IP_OVERRIDES")
+[[ "$IP_JSON" != '{}' ]] && echo "Реальные IP: $IP_JSON"
+OVERLAY_JSON=$(jq -cn --arg r "$OVERLAY" '$r | split("[ ,]+"; null) | map(select(length>0))')
+for r in $(jq -r '.[]' <<<"$OVERLAY_JSON"); do
+  [[ "$r" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$ ]] \
+    || { echo "OVERLAY_RANGES: «$r» — нужен вид 100.64.0.0/10"; exit 1; }
+done
+echo "Оверлейные сети: $OVERLAY_JSON"
 
 echo "Запрашиваю ноды у ${API_URL} ..."
 BODY_FILE=$(mktemp)
@@ -113,6 +131,27 @@ NODES=$(echo "$RAW" | jq -c '
 COUNT=$(echo "$NODES" | jq 'length')
 [[ "$COUNT" -gt 0 ]] || { echo "API вернул ноль нод. Сырой ответ:"; echo "$RAW" | head -c 500; exit 1; }
 
+# Для каждой ноды решаем, по какому адресу её проверять снаружи.
+TARGETS=$(echo "$NODES" | jq -c --arg ignore "$IGNORE" --argjson ips "$IP_JSON" --argjson overlay "$OVERLAY_JSON" '
+  def ip2n: split(".") | map(tonumber) | .[0]*16777216 + .[1]*65536 + .[2]*256 + .[3];
+  def in_cidr($c): ($c | split("/")) as $p
+    | pow(2; 32 - ($p[1] | tonumber)) as $size
+    | ((ip2n / $size) | floor) == ((($p[0] | ip2n) / $size) | floor);
+  [ .[]
+    # Выключенные в панели ноды не мониторим: они выключены намеренно.
+    | select((.isDisabled // false) == false)
+    | select((.name // "") | test($ignore; "i") | not)
+    | select((.address // "") != "")
+    | . as $n
+    # Адрес из оверлейной сети (NetBird и т.п.) пингуется только изнутри неё:
+    # панель его видит, а хаб и клиенты — нет. Такой ноде нужен реальный IP.
+    | ($n.address | test("^[0-9]{1,3}(\\.[0-9]{1,3}){3}$")
+        and (. as $a | any($overlay[]; . as $c | $a | in_cidr($c)))) as $is_overlay
+    | ($ips[$n.name] // (if $is_overlay then null else $n.address end)) as $ip
+    | {name: $n.name, address: $n.address, ip: $ip, hoster: ($n.providerName // "")}
+  ]
+')
+
 {
   echo "# Файл создан автоматически: make sync-nodes"
   echo "# Руками не править — правки затрёт следующая синхронизация."
@@ -120,32 +159,41 @@ COUNT=$(echo "$NODES" | jq 'length')
   echo "# Ноды с агентом перечислены отдельно, в targets/agents.yml."
   echo "# Проект: ${PROJECT}. Источник: ${API_URL}/api/nodes, $(date '+%Y-%m-%d %H:%M')"
   echo
-  echo "$NODES" | jq -r --arg ignore "$IGNORE" --arg port "$XRAY_PORT" --argjson ov "$OV_JSON" '
+  echo "$TARGETS" | jq -r --arg port "$XRAY_PORT" --argjson ov "$OV_JSON" '
     .[]
-    # Выключенные в панели ноды не мониторим: они выключены намеренно.
-    | select((.isDisabled // false) == false)
-    | select((.name // "") | test($ignore; "i") | not)
-    | select((.address // "") != "")
+    | select(.ip != null)
+    | . as $n
     # Поле port у ноды — это её внутренний API (2222), закрытый для всех,
     # кроме панели. Порт, на котором xray принимает клиентов, панель в
     # списке нод не отдаёт: берём из DEFAULT_XRAY_PORT или из overrides.
-    | . as $n
     | ($ov[$n.name] // $port) as $xp
     # Значение может быть портом (8443), парой хост:порт для нод за CDN
-    # или словом skip, чтобы не проверять порт вовсе.
+    # или словом skip, чтобы не проверять порт вовсе. Порт проверяем
+    # на реальном IP: клиенты подключаются туда, а не в оверлей.
     | (if $xp == "skip" then ""
        elif ($xp | test(":")) then $xp
-       else "\($n.address):\($xp)" end) as $target
-    | "- targets: [\"\($n.address):9100\"]\n  labels:\n    node: \"\($n.name)\"\n    public_ip: \"\($n.address)\"\n"
+       else "\($n.ip):\($xp)" end) as $target
+    | "- targets: [\"\($n.ip):9100\"]\n  labels:\n    node: \"\($n.name)\"\n    public_ip: \"\($n.ip)\"\n"
       + (if $target == "" then "" else "    tcp_target: \"\($target)\"\n" end)
-      + "    hoster: \"\($n.providerName // "")\"\n"
+      + "    hoster: \"\($n.hoster)\"\n"
   '
 } > "$OUT.tmp"
 
 mv "$OUT.tmp" "$OUT"
 
 WRITTEN=$(grep -c '^- targets:' "$OUT" || true)
-echo "Записано нод: ${WRITTEN} из ${COUNT} (остальные выключены или в игноре)"
+echo "Записано нод: ${WRITTEN} из ${COUNT} (остальные выключены, в игноре или без реального IP)"
 echo "Файл: $OUT"
+
+# Ноды в оверлее без реального IP не проверяются вовсе — лучше молчать,
+# чем каждую минуту показывать живую ноду упавшей. Но сказать об этом надо.
+UNRESOLVED=$(echo "$TARGETS" | jq -r '.[] | select(.ip == null) | "  \(.name) = <реальный IP>    # в панели \(.address)"')
+if [[ -n "$UNRESOLVED" ]]; then
+  echo
+  echo "⚠️  Эти ноды панель знает по адресу из оверлейной сети ($OVERLAY),"
+  echo "    снаружи он не пингуется, поэтому проверки по ним выключены."
+  echo "    Впишите реальные IP в ${IP_OVERRIDES#$ROOT/}:"
+  echo "$UNRESOLVED"
+fi
 echo
 echo "vmagent перечитает его сам в течение 30 секунд."

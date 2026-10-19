@@ -131,8 +131,37 @@ NODES=$(echo "$RAW" | jq -c '
 COUNT=$(echo "$NODES" | jq 'length')
 [[ "$COUNT" -gt 0 ]] || { echo "API вернул ноль нод. Сырой ответ:"; echo "$RAW" | head -c 500; exit 1; }
 
-# Для каждой ноды решаем, по какому адресу её проверять снаружи.
-TARGETS=$(echo "$NODES" | jq -c --arg ignore "$IGNORE" --argjson ips "$IP_JSON" --argjson overlay "$OVERLAY_JSON" '
+# Реальные IP нод в NetBird: его API знает про каждый пир и адрес в сети
+# NetBird, и белый IP, с которого пир к ней подключён. Нужен токен —
+# hub/secrets/netbird_api_token (общий) или netbird_api_token_<проект>.
+NB_JSON='{}'
+NB_OK=""
+NB_TOKEN_FILE="$ROOT/hub/secrets/netbird_api_token_${PROJECT}"
+[[ -s "$NB_TOKEN_FILE" ]] || NB_TOKEN_FILE="$ROOT/hub/secrets/netbird_api_token"
+if [[ -s "$NB_TOKEN_FILE" ]]; then
+  NB_URL="$(proj_env NETBIRD_API_URL)"; NB_URL="${NB_URL:-$(read_env NETBIRD_API_URL)}"; NB_URL="${NB_URL:-https://api.netbird.io}"
+  NB_TOKEN="$(tr -d '\n\r' < "$NB_TOKEN_FILE")"
+  NB_BODY=$(mktemp)
+  NB_CODE=$(curl -sS -H "Authorization: Token ${NB_TOKEN}" -H "Accept: application/json" \
+    -o "$NB_BODY" -w '%{http_code}' "${NB_URL%/}/api/peers" || echo 000)
+  if [[ "$NB_CODE" == "200" ]]; then
+    NB_OK=1
+    # Только IPv4: пробы ходят по ip4, а пир, подключённый по IPv6,
+    # лучше показать в списке без IP, чем молча не допинговаться.
+    NB_JSON=$(jq -c '[ .[] | select((.ip // "") != "")
+        | select((.connection_ip // "") | test("^[0-9]{1,3}(\\.[0-9]{1,3}){3}$"))
+        | {(.ip): .connection_ip} ] | add // {}' "$NB_BODY" 2>/dev/null || echo '{}')
+    echo "Пиров NetBird с белым IP: $(jq 'length' <<<"$NB_JSON")"
+  else
+    echo "⚠️  API NetBird ответил кодом ${NB_CODE} — реальные IP берутся только из ${IP_OVERRIDES#$ROOT/}."
+    [[ "$NB_CODE" == "401" ]] && echo "    Проверьте токен в ${NB_TOKEN_FILE#$ROOT/}."
+  fi
+  rm -f "$NB_BODY"
+fi
+
+# Для каждой ноды решаем, по какому адресу её проверять снаружи:
+# строка в public-ip-overrides важнее всего, потом NetBird, потом панель.
+TARGETS=$(echo "$NODES" | jq -c --arg ignore "$IGNORE" --argjson ips "$IP_JSON" --argjson nb "$NB_JSON" --argjson overlay "$OVERLAY_JSON" '
   def ip2n: split(".") | map(tonumber) | .[0]*16777216 + .[1]*65536 + .[2]*256 + .[3];
   def in_cidr($c): ($c | split("/")) as $p
     | pow(2; 32 - ($p[1] | tonumber)) as $size
@@ -147,8 +176,11 @@ TARGETS=$(echo "$NODES" | jq -c --arg ignore "$IGNORE" --argjson ips "$IP_JSON" 
     # панель его видит, а хаб и клиенты — нет. Такой ноде нужен реальный IP.
     | ($n.address | test("^[0-9]{1,3}(\\.[0-9]{1,3}){3}$")
         and (. as $a | any($overlay[]; . as $c | $a | in_cidr($c)))) as $is_overlay
-    | ($ips[$n.name] // (if $is_overlay then null else $n.address end)) as $ip
-    | {name: $n.name, address: $n.address, ip: $ip, hoster: ($n.providerName // "")}
+    | (if $ips[$n.name] then {ip: $ips[$n.name], via: "файл"}
+       elif $is_overlay and $nb[$n.address] then {ip: $nb[$n.address], via: "NetBird"}
+       elif $is_overlay then {ip: null, via: null}
+       else {ip: $n.address, via: null} end) as $r
+    | {name: $n.name, address: $n.address, ip: $r.ip, via: $r.via, hoster: ($n.providerName // "")}
   ]
 ')
 
@@ -187,12 +219,28 @@ echo "Файл: $OUT"
 
 # Ноды в оверлее без реального IP не проверяются вовсе — лучше молчать,
 # чем каждую минуту показывать живую ноду упавшей. Но сказать об этом надо.
+RESOLVED=$(echo "$TARGETS" | jq -r '.[] | select(.via != null) | "  \(.name): \(.address) → \(.ip)  (\(.via))"')
+if [[ -n "$RESOLVED" ]]; then
+  echo
+  echo "Проверяются по реальному IP, а не по адресу из панели:"
+  echo "$RESOLVED"
+fi
+
 UNRESOLVED=$(echo "$TARGETS" | jq -r '.[] | select(.ip == null) | "  \(.name) = <реальный IP>    # в панели \(.address)"')
 if [[ -n "$UNRESOLVED" ]]; then
   echo
   echo "⚠️  Эти ноды панель знает по адресу из оверлейной сети ($OVERLAY),"
   echo "    снаружи он не пингуется, поэтому проверки по ним выключены."
-  echo "    Впишите реальные IP в ${IP_OVERRIDES#$ROOT/}:"
+  if [[ -n "$NB_OK" ]]; then
+    echo "    В NetBird для них белого IP нет (пир не подключён или подключён по IPv6)."
+    echo "    Впишите их руками в ${IP_OVERRIDES#$ROOT/}:"
+  elif [[ -s "$NB_TOKEN_FILE" ]]; then
+    echo "    Спросить NetBird не вышло (см. выше). Почините токен или впишите"
+    echo "    их руками в ${IP_OVERRIDES#$ROOT/}:"
+  else
+    echo "    Проще всего положить токен NetBird в hub/secrets/netbird_api_token —"
+    echo "    тогда IP подтянутся сами. Или впишите их руками в ${IP_OVERRIDES#$ROOT/}:"
+  fi
   echo "$UNRESOLVED"
 fi
 echo

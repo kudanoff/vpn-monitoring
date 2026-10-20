@@ -54,17 +54,21 @@ inhibit_rules:
     target_matchers: [alertname != "NodeDisabledInPanel"]
     equal: [project, node]
 
+  # Имена нод в разных проектах совпадают, поэтому сравниваем и проект:
+  # иначе упавшая нода одного проекта глушит тёзку в соседнем.
   - source_matchers: [alertname = "NodeDown"]
     target_matchers: [severity =~ "warning|info"]
-    equal: [node]
+    equal: [project, node]
 
+  # Сервер лёг — значит панель его тоже потеряла. Об этом одно сообщение,
+  # а не два про одно и то же, и одно «отбой» вместо двух.
   - source_matchers: [alertname = "NodeDown"]
-    target_matchers: [alertname =~ "ExporterDown|PanelLostNodeButHostAlive|NodeBlockedFromRussia|XrayPortUnreachableFromRussia"]
-    equal: [node]
+    target_matchers: [alertname =~ "ExporterDown|PanelNodeDisconnected|PanelLostNodeButHostAlive|NodeBlockedFromRussia|XrayPortUnreachableFromRussia"]
+    equal: [project, node]
 
   - source_matchers: [alertname = "NodeBlockedFromRussia"]
     target_matchers: [alertname = "XrayPortUnreachableFromRussia"]
-    equal: [node]
+    equal: [project, node]
 
 receivers:
   # Молчаливый приёмник: сюда уходит то, о чём сообщать не надо.

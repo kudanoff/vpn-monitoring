@@ -8,11 +8,12 @@ groups:
   rules:
 
   # Агент молчит И нода не пингуется ниоткуда — сервер действительно лёг.
+  # Пять минут — запас на перезагрузку: сервер, который сам поднялся, не авария.
   - alert: NodeDown
     expr: |
       up{job="node"} == 0
         and on(project, node) (max by(project, node) (probe_success{job=~"probe_.*"}) == 0)
-    for: 3m
+    for: 5m
     labels:
       severity: critical
       action: "поднимать сервер / писать хостеру"
@@ -51,7 +52,7 @@ groups:
   - alert: PanelLostNodeButHostAlive
     expr: |
       node:panel_status == 0 and on(project, node) up{job="node"} == 1
-    for: 3m
+    for: 5m
     labels:
       severity: warning
       action: "перезапустить контейнер ноды, ехать не нужно"

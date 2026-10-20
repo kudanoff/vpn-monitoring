@@ -1,4 +1,6 @@
 """Превращение метрик в текст, который приятно читать с телефона."""
+import datetime
+import re
 
 
 def bps(v: float | None) -> str:
@@ -142,6 +144,8 @@ def node_card(name: str, s: dict) -> str:
 
 
 def duration(seconds: float) -> str:
+    if seconds < 60:
+        return f"{int(seconds)} с"
     minutes = int(seconds // 60)
     if minutes < 60:
         return f"{minutes} мин"
@@ -183,6 +187,7 @@ def alert_group(payload: dict, since: float | None = None) -> str:
     """
     Одно сообщение на группу алертов. Двадцать четыре письма про одно и то же
     событие читать никто не станет, а значит и аварию в них не разглядит.
+    Здесь только горящие алерты: про отбой пишет alert_resolved.
     """
     alerts = payload.get("alerts", [])
     if not alerts:
@@ -191,23 +196,17 @@ def alert_group(payload: dict, since: float | None = None) -> str:
         text = alert_message(alerts[0])
         return text + (f"\n<i>длится {duration(since)}</i>" if since else "")
 
-    resolved = all(a.get("status") == "resolved" for a in alerts)
     first = alerts[0]
     name = first.get("annotations", {}).get("summary", "")
-    # Из "🔴 sech — сервер недоступен" оставляем суть без имени ноды.
-    kind = name.split("—", 1)[1].strip() if "—" in name else first.get("labels", {}).get("alertname", "Алерт")
-    icon = name.strip()[:2] if name else "⚠️"
+    icon = name.split()[0] if name.strip() else "⚠️"
 
-    head = f"✅ <b>Восстановлено ({len(alerts)})</b>" if resolved else f"{icon} <b>{kind}</b> — нод: {len(alerts)}"
-    lines = [head, ""]
-
-    for a in sorted(alerts, key=lambda x: x.get("labels", {}).get("node", "")):
-        node = a.get("labels", {}).get("node", "?")
+    lines = [f"{icon} <b>{_kind(first)}</b> — нод: {len(alerts)}", ""]
+    for a in sorted(alerts, key=_node):
         hoster = a.get("labels", {}).get("hoster")
-        lines.append(f"  • {node}" + (f" <i>({hoster})</i>" if hoster else ""))
+        lines.append(f"  • {_node(a)}" + (f" <i>({hoster})</i>" if hoster else ""))
 
     action = first.get("labels", {}).get("action")
-    if action and not resolved:
+    if action:
         lines += ["", f"👉 <i>{action}</i>"]
     if since:
         lines += [f"<i>длится {duration(since)}</i>"]
@@ -218,17 +217,66 @@ def alert_group(payload: dict, since: float | None = None) -> str:
 def alert_message(alert: dict) -> str:
     labels = alert.get("labels", {})
     ann = alert.get("annotations", {})
-    resolved = alert.get("status") == "resolved"
-
-    head = "✅ <b>Восстановлено</b>" if resolved else ann.get("summary", labels.get("alertname", "Алерт"))
-    body = [head]
-
-    if resolved:
-        body.append(ann.get("summary", labels.get("alertname", "")))
-    else:
-        if ann.get("description"):
-            body.append(ann["description"])
-        if labels.get("action"):
-            body.append(f"\n👉 <i>{labels['action']}</i>")
-
+    body = [ann.get("summary", labels.get("alertname", "Алерт"))]
+    if ann.get("description"):
+        body.append(ann["description"])
+    if labels.get("action"):
+        body.append(f"\n👉 <i>{labels['action']}</i>")
     return "\n".join(body)
+
+
+def alert_resolved(alerts: list[dict], still: list[dict] | None = None) -> str:
+    """
+    Отбой. Проблема зачёркнута, рядом — сколько она длилась: по одной строке
+    сразу понятно, что прошло и было ли это мгновенное моргание или авария.
+    still — то, что из той же группы ещё горит, если поднялось не всё.
+    """
+    if not alerts:
+        return ""
+    kind = _kind(alerts[0])
+    if len(alerts) == 1 and not still:
+        a = alerts[0]
+        node = f"<b>{_node(a)}</b> — " if a.get("labels", {}).get("node") else ""
+        took = lasted(a)
+        return (f"✅ {node}отбой\n<s>{kind}</s>"
+                + (f" · длилось {duration(took)}" if took is not None else ""))
+
+    lines = [f"✅ <b>Отбой</b> — <s>{kind}</s>", ""]
+    for a in sorted(alerts, key=_node):
+        took = lasted(a)
+        lines.append(f"  • {_node(a)}" + (f" — {duration(took)}" if took is not None else ""))
+    if still:
+        lines += ["", f"<i>ещё не прошло: {', '.join(sorted(_node(a) for a in still))}</i>"]
+    return "\n".join(lines)
+
+
+def _node(alert: dict) -> str:
+    return alert.get("labels", {}).get("node", "?")
+
+
+def _kind(alert: dict) -> str:
+    """Суть алерта без иконки, проекта и ноды: «сервер недоступен»."""
+    summary = alert.get("annotations", {}).get("summary", "")
+    if "—" in summary:
+        return summary.split("—", 1)[1].strip()
+    # Алерт не про ноду: срезаем только иконку в начале.
+    return re.sub(r"^[^\w\[]+", "", summary) or alert.get("labels", {}).get("alertname", "Алерт")
+
+
+def _ts(value: str) -> float | None:
+    # Alertmanager пишет время с наносекундами, Python их не разбирает —
+    # дробная часть для «длилось N минут» всё равно не нужна.
+    if not value or value.startswith("0001-"):
+        return None
+    try:
+        return datetime.datetime.fromisoformat(re.sub(r"\.\d+", "", value).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def lasted(alert: dict) -> float | None:
+    """Сколько алерт горел, секунд."""
+    start, end = _ts(alert.get("startsAt", "")), _ts(alert.get("endsAt", ""))
+    if start is None or end is None or end < start:
+        return None
+    return end - start

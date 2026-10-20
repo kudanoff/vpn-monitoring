@@ -22,7 +22,8 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramUnauthorizedError
 from aiogram.filters import Command, CommandObject
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import (CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message,
+                           ReplyParameters)
 
 import render
 from vm import by_node, instant
@@ -59,6 +60,16 @@ VM_URL = os.getenv("VM_URL", "http://victoriametrics:8428")
 # значение. Alertmanager так не умеет — у него интервал фиксированный, —
 # поэтому он будит бота ежеминутно, а бот решает, пора ли писать.
 REPEAT_STEPS = [int(x) for x in os.getenv("REPEAT_STEPS", "3,5,8,10,30,60").split(",") if x.strip()]
+# Нарастающие паузы — только для critical. Предупреждение (диск, процессор,
+# канал) не требует бросать всё, и напоминать о нём каждые три минуты —
+# верный способ приучить чат ничего не читать.
+WARNING_REPEAT_HOURS = float(os.getenv("WARNING_REPEAT_HOURS", "4"))
+# Ночью всё, кроме critical, приходит без звука: сообщение на месте, но не будит.
+# Часы по Москве, «0-8» — с полуночи до восьми утра. Пусто — без ночного режима.
+QUIET_HOURS = os.getenv("QUIET_HOURS", "0-8").strip()
+# В Москве нет перехода на летнее время, так что хватает постоянного сдвига
+# и не нужна база часовых поясов, которой в slim-образе может не быть.
+MSK = datetime.timezone(datetime.timedelta(hours=3))
 ALERTMANAGER_URL = os.getenv("ALERTMANAGER_URL", "http://alertmanager:9093")
 HEALTHCHECKS_URL = os.getenv("HEALTHCHECKS_URL", "")
 
@@ -67,7 +78,10 @@ HEALTHCHECKS_URL = os.getenv("HEALTHCHECKS_URL", "")
 # рвётся: про это уже известно, чинить пока нечем, а всё остальное по ноде
 # (лёг сервер, кончается диск) должно доходить как обычно.
 LINK_ALERTS = ("NodeFlapping", "PanelNodeDisconnected", "PanelLostNodeButHostAlive")
-# Вебхуки панели идут мимо Alertmanager, поэтому их приходится глушить в боте.
+# Вебхуки панели про связь в чат не идут: о потере связи сообщает алерт
+# PanelNodeDisconnected, выждав пять минут. Мгновенный вебхук на каждую
+# перезагрузку давал «потеряна» и следом «восстановлена» — два сообщения
+# ни о чём.
 LINK_EVENTS = {"node.connection_lost", "node.connection_restored"}
 MUTE_KINDS = {
     "full": ("🔇", "молчит всё"),
@@ -867,52 +881,118 @@ async def cb_resume(call: CallbackQuery) -> None:
 _escalation: dict[str, dict] = {}
 
 
-async def _send(text: str, keyboard: InlineKeyboardMarkup | None = None) -> None:
+def night() -> bool:
+    if not QUIET_HOURS:
+        return False
     try:
-        await bot.send_message(CHAT_ID, text, reply_markup=keyboard)
+        start, end = (int(x) for x in QUIET_HOURS.split("-"))
+    except ValueError:
+        return False
+    hour = datetime.datetime.now(MSK).hour
+    return start <= hour < end if start <= end else hour >= start or hour < end
+
+
+async def _send(text: str, keyboard: InlineKeyboardMarkup | None = None,
+                silent: bool = False, reply_to: int | None = None) -> int | None:
+    """Отправляет сообщение в чат и возвращает его id — чтобы потом ответить на него отбоем."""
+    reply = ReplyParameters(message_id=reply_to, allow_sending_without_reply=True) if reply_to else None
+    try:
+        sent = await bot.send_message(CHAT_ID, text, reply_markup=keyboard,
+                                      disable_notification=silent, reply_parameters=reply)
+        return sent.message_id
     except Exception as exc:
         log.error("не отправился алерт: %s", exc)
+        return None
+
+
+def alert_policy(payload: dict) -> tuple[str, bool]:
+    """
+    Как шуметь об этой группе: уровень и разовое ли это событие.
+    Группа собрана по alertname, так что у всех алертов в ней одни метки.
+    """
+    alerts = payload.get("alerts", [])
+    labels = payload.get("commonLabels") or (alerts[0].get("labels", {}) if alerts else {})
+    return labels.get("severity", "warning"), labels.get("notify") == "once"
+
+
+def _fp(alert: dict) -> str:
+    return alert.get("fingerprint", "")
 
 
 async def handle_alerts(request: web.Request) -> web.Response:
     """
-    Алерты от Alertmanager. Он стучится часто, а решение "напоминать или
-    промолчать" принимается здесь — по нарастающим паузам REPEAT_STEPS.
+    Алерты от Alertmanager. Он стучится ежеминутно, а решение «писать или
+    промолчать» принимается здесь:
+
+      critical — со звуком всегда, напоминания по нарастающим REPEAT_STEPS;
+      warning  — со звуком днём, напоминание раз в WARNING_REPEAT_HOURS;
+      info     — без звука, один раз, без отбоя;
+      notify: once — разовое событие: одно сообщение, без напоминаний и отбоя.
+
+    Отбой всегда тихий и приходит ответом на исходное сообщение: о том,
+    что всё прошло, не нужно будить, но нужно видеть, к чему он относится.
     """
     payload = await request.json()
     alerts = payload.get("alerts", [])
     firing = [a for a in alerts if a.get("status") == "firing"]
+    resolved = [a for a in alerts if a.get("status") == "resolved"]
     key = payload.get("groupKey") or str(sorted(payload.get("groupLabels", {}).items()))
     now = time.time()
+
+    severity, once = alert_policy(payload)
+    # Для info и разовых событий отбой бессмыслен: перезагрузка не
+    # «восстанавливается», а о замере скорости не нужно сообщать дважды.
+    closes = severity != "info" and not once
+    # Напоминаем только о том, что требует рук.
+    reminds = severity in ("critical", "warning") and not once
+    silent = severity == "info" or (severity != "critical" and night())
+    state = _escalation.get(key)
 
     if not firing:
         # Проблема ушла: сообщаем и забываем историю напоминаний, чтобы
         # следующая авария начиналась с чистого листа.
         _escalation.pop(key, None)
         _snoozes.pop(snooze_token(key), None)
-        text = render.alert_group(payload)
-        if text:
-            await _send(text)
+        if closes:
+            text = render.alert_resolved(resolved)
+            if text:
+                await _send(text, silent=True, reply_to=state and state.get("msg"))
+        return web.Response(text="ok")
+
+    sig = tuple(sorted(_fp(a) for a in firing))
+
+    # Часть нод поднялась, остальные ещё лежат — это продолжение той же
+    # аварии, а не новая: отбой по поднявшимся, отсчёт напоминаний не трогаем.
+    if state is not None and set(sig) < set(state["sig"]):
+        back = [a for a in resolved if _fp(a) in state["sig"]]
+        state["sig"] = sig
+        if closes and back:
+            await _send(render.alert_resolved(back, still=firing), silent=True, reply_to=state.get("msg"))
         return web.Response(text="ok")
 
     # Состав группы — часть опознавательного знака: если к аварии добавилась
     # ещё одна нода, это новая ситуация, а не продолжение старой.
-    sig = tuple(sorted(a.get("fingerprint", "") for a in firing))
-    state = _escalation.get(key)
-
     if state is None or state["sig"] != sig:
-        _escalation[key] = {"sig": sig, "since": now, "last": now, "step": 0}
-        await _send(render.alert_group(payload), snooze_buttons(remember_group(payload, key)))
+        # О разовых событиях пишем только про новые ноды: про старые уже сказано.
+        shown = [a for a in firing if not (once and state and _fp(a) in state["sig"])]
+        keyboard = snooze_buttons(remember_group({**payload, "alerts": firing}, key)) if reminds else None
+        msg = await _send(render.alert_group({**payload, "alerts": shown}), keyboard, silent=silent)
+        _escalation[key] = {"sig": sig, "since": now, "last": now, "step": 0, "msg": msg}
         return web.Response(text="ok")
 
-    pause = REPEAT_STEPS[min(state["step"], len(REPEAT_STEPS) - 1)] * 60
+    if not reminds:
+        return web.Response(text="ok")
+    if severity == "critical":
+        pause = REPEAT_STEPS[min(state["step"], len(REPEAT_STEPS) - 1)] * 60
+    else:
+        pause = WARNING_REPEAT_HOURS * 3600
     if now - state["last"] < pause:
         return web.Response(text="ok")  # ещё рано напоминать
 
     state["last"] = now
     state["step"] += 1
-    await _send(render.alert_group(payload, since=now - state["since"]),
-                snooze_buttons(remember_group(payload, key)))
+    await _send(render.alert_group({**payload, "alerts": firing}, since=now - state["since"]),
+                snooze_buttons(remember_group({**payload, "alerts": firing}, key)), silent=silent)
     return web.Response(text="ok")
 
 
@@ -951,34 +1031,32 @@ async def handle_remnawave(request: web.Request) -> web.Response:
     node = data.get("name") or data.get("nodeName") or data.get("uuid", "?")
 
     texts = {
-        "node.connection_lost": f"🟡 <b>{node}</b> — панель потеряла связь с нодой",
-        "node.connection_restored": f"✅ <b>{node}</b> — связь с нодой восстановлена",
         "node.traffic_notify": f"📊 <b>{node}</b> — достигнут порог трафика",
         "node.disabled": f"⏸ <b>{node}</b> — нода выключена в панели",
         "node.enabled": f"▶️ <b>{node}</b> — нода включена в панели",
     }
-    # Отмечаем сразу, не дожидаясь опроса: следом за node.disabled панель
-    # присылает потерю связи, и её уже надо промолчать.
+    # Выключение и включение делает человек руками — ему и так известно,
+    # остальным достаточно увидеть это в ленте, не вздрагивая.
+    quiet = {"node.disabled", "node.enabled"}
+    # Отмечаем сразу, не дожидаясь опроса: алерты по ноде должны замолчать
+    # ещё до того, как панель заметит потерю связи.
     if name == "node.disabled":
         _disabled.add(node)
     elif name == "node.enabled":
         _disabled.discard(node)
-    elif name in LINK_EVENTS and node in _disabled:
-        log.info("вебхук %s по выключенной ноде %s пропущен", name, node)
+    elif name in LINK_EVENTS:
+        log.info("вебхук %s по ноде %s: в чат не идёт, за связью следит алерт", name, node)
         return web.Response(text="ok")
 
     if name in texts:
         # Вебхук приходит напрямую от панели, Alertmanager его не видит —
         # значит и заглушку по ноде здесь нужно проверить самим.
         async with aiohttp.ClientSession() as session:
-            if await muted(session, node, "link" if name in LINK_EVENTS else "other"):
+            if await muted(session, node, "other"):
                 log.info("вебхук %s по ноде %s подавлен заглушкой", name, node)
                 return web.Response(text="ok")
 
-        suffix = ""
-        if name == "node.connection_lost":
-            suffix = "\n<i>жду подтверждения от агента — если сервер жив, придёт уточнение</i>"
-        await bot.send_message(CHAT_ID, texts[name] + suffix)
+        await _send(texts[name], silent=name in quiet or night())
 
     return web.Response(text="ok")
 
@@ -1040,8 +1118,10 @@ async def main() -> None:
     hello = "🚀 Мониторинг запущен. /status — сводка"
     if PROJECT:
         hello = f"🚀 Мониторинг проекта <b>{PROJECT}</b> запущен. /status — сводка"
+    # Без звука: бот перезапускается при каждом обновлении, и будить из-за
+    # этого незачем. Строка в ленте нужна, чтобы было видно, что он жив.
     try:
-        await bot.send_message(CHAT_ID, hello)
+        await bot.send_message(CHAT_ID, hello, disable_notification=True)
     except Exception as exc:
         log.error("не удалось написать в чат %s: %s. Проверьте TELEGRAM_CHAT_ID "
                   "и что бот добавлен в группу с правом писать.", CHAT_ID, exc)

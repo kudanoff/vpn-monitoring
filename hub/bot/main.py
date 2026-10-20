@@ -22,8 +22,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramUnauthorizedError
 from aiogram.filters import Command, CommandObject
-from aiogram.types import (CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message,
-                           ReplyParameters)
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import render
 from vm import by_node, instant
@@ -839,8 +838,9 @@ async def cb_snooze(call: CallbackQuery) -> None:
 
     ctx["silences"] = ids
     ctx["text"] = call.message.html_text
-    # Цикл напоминаний начинается заново — и сейчас, и когда пауза кончится.
-    _escalation.pop(ctx["key"], None)
+    # Когда пауза кончится, карточка придёт заново, как новая проблема,
+    # а эта, «на паузе», будет убрана: помним её, но забываем состав.
+    restart_card(ctx["key"])
 
     await call.answer(f"Пауза на {render.duration(hours * 3600)}")
     try:
@@ -861,7 +861,7 @@ async def cb_resume(call: CallbackQuery) -> None:
 
     async with aiohttp.ClientSession() as session:
         await drop_mutes(session, silence_ids=ctx.pop("silences", []))
-    _escalation.pop(ctx["key"], None)
+    restart_card(ctx["key"])
 
     await call.answer("Уведомления возобновлены")
     try:
@@ -875,10 +875,13 @@ async def cb_resume(call: CallbackQuery) -> None:
 # Входящие вебхуки
 # ─────────────────────────────────────────────────────────────────────────
 
-# Состояние эскалации по группам алертов. В памяти: после перезапуска бота
-# отсчёт начнётся заново, и это правильнее, чем молчать из-за потерянного
-# состояния.
+# Карточки проблем — по одной на группу алертов. В памяти: после перезапуска
+# бота отсчёт начнётся заново, и это правильнее, чем молчать из-за
+# потерянного состояния.
 _escalation: dict[str, dict] = {}
+# Последнее сообщение бота в чате. Если карточка — последнее сообщение,
+# её можно просто поправить: правку видно сразу, а лента не растёт.
+_last_msg: int | None = None
 
 
 def night() -> bool:
@@ -893,16 +896,74 @@ def night() -> bool:
 
 
 async def _send(text: str, keyboard: InlineKeyboardMarkup | None = None,
-                silent: bool = False, reply_to: int | None = None) -> int | None:
-    """Отправляет сообщение в чат и возвращает его id — чтобы потом ответить на него отбоем."""
-    reply = ReplyParameters(message_id=reply_to, allow_sending_without_reply=True) if reply_to else None
+                silent: bool = False) -> int | None:
+    """Отправляет сообщение в чат и возвращает его id — чтобы потом править карточку."""
+    global _last_msg
     try:
-        sent = await bot.send_message(CHAT_ID, text, reply_markup=keyboard,
-                                      disable_notification=silent, reply_parameters=reply)
-        return sent.message_id
+        sent = await bot.send_message(CHAT_ID, text, reply_markup=keyboard, disable_notification=silent)
     except Exception as exc:
         log.error("не отправился алерт: %s", exc)
         return None
+    _last_msg = sent.message_id
+    return sent.message_id
+
+
+async def _edit(msg: int | None, text: str, keyboard: InlineKeyboardMarkup | None = None) -> bool:
+    if not msg:
+        return False
+    try:
+        await bot.edit_message_text(text, chat_id=CHAT_ID, message_id=msg, reply_markup=keyboard)
+        return True
+    except Exception as exc:
+        # Текст не изменился — правка не нужна, но карточка на месте.
+        if "not modified" in str(exc):
+            return True
+        log.warning("не вышло поправить карточку %s: %s", msg, exc)
+        return False
+
+
+async def _drop(msg: int | None) -> None:
+    """Убирает старую карточку. Не вышло (нет прав, старше 48 ч) — не беда, останется."""
+    if not msg:
+        return
+    try:
+        await bot.delete_message(CHAT_ID, msg)
+    except Exception as exc:
+        log.warning("не вышло убрать карточку %s: %s", msg, exc)
+
+
+async def repost(state: dict | None, text: str, keyboard: InlineKeyboardMarkup | None,
+                 silent: bool) -> int | None:
+    """
+    Карточка заново внизу ленты: новое сообщение, старое убираем. Так
+    напоминание и новая нода в аварии будят, но в чате по-прежнему одно
+    сообщение на проблему, а не стопка версий одного и того же.
+    """
+    msg = await _send(text, keyboard, silent=silent)
+    if msg and state:
+        await _drop(state.get("msg"))
+    return msg
+
+
+async def settle(state: dict | None, text: str, keyboard: InlineKeyboardMarkup | None = None) -> None:
+    """
+    Тихая перемена в карточке — отбой или поднявшаяся нода. Если карточка
+    последняя в ленте, правим её на месте. Если выше уже что-то есть, правку
+    никто не заметит — тогда переносим карточку вниз, без звука.
+    """
+    msg = state.get("msg") if state else None
+    if msg and msg == _last_msg and await _edit(msg, text, keyboard):
+        return
+    new = await repost(state, text, keyboard, silent=True)
+    if state is not None and new:
+        state["msg"] = new
+
+
+def restart_card(key: str) -> None:
+    """Следующий вызов Alertmanager пришлёт карточку заново, как новую, и уберёт эту."""
+    state = _escalation.get(key)
+    if state:
+        state["sig"] = ()
 
 
 def alert_policy(payload: dict) -> tuple[str, bool]:
@@ -922,15 +983,16 @@ def _fp(alert: dict) -> str:
 async def handle_alerts(request: web.Request) -> web.Response:
     """
     Алерты от Alertmanager. Он стучится ежеминутно, а решение «писать или
-    промолчать» принимается здесь:
+    промолчать» принимается здесь.
+
+    Главное правило: одна проблема — одно сообщение в чате, карточка.
+    Напоминание и новая нода в аварии переносят карточку вниз (старая
+    убирается), отбой и поднявшиеся ноды правят её без звука.
 
       critical — со звуком всегда, напоминания по нарастающим REPEAT_STEPS;
       warning  — со звуком днём, напоминание раз в WARNING_REPEAT_HOURS;
       info     — без звука, один раз, без отбоя;
       notify: once — разовое событие: одно сообщение, без напоминаний и отбоя.
-
-    Отбой всегда тихий и приходит ответом на исходное сообщение: о том,
-    что всё прошло, не нужно будить, но нужно видеть, к чему он относится.
     """
     payload = await request.json()
     alerts = payload.get("alerts", [])
@@ -948,36 +1010,47 @@ async def handle_alerts(request: web.Request) -> web.Response:
     silent = severity == "info" or (severity != "critical" and night())
     state = _escalation.get(key)
 
+    def card(since: float | None = None) -> tuple[str, InlineKeyboardMarkup | None]:
+        group = {**payload, "alerts": firing}
+        keyboard = snooze_buttons(remember_group(group, key)) if reminds else None
+        return render.alert_group(group, since=since, back=state and state.get("back")), keyboard
+
     if not firing:
-        # Проблема ушла: сообщаем и забываем историю напоминаний, чтобы
-        # следующая авария начиналась с чистого листа.
+        # Проблема ушла: карточка превращается в отбой, история забывается,
+        # чтобы следующая авария начиналась с чистого листа.
         _escalation.pop(key, None)
         _snoozes.pop(snooze_token(key), None)
         if closes:
-            text = render.alert_resolved(resolved)
-            if text:
-                await _send(text, silent=True, reply_to=state and state.get("msg"))
+            back = (state.get("back", []) if state else []) + resolved
+            await settle(state, render.alert_resolved(back))
         return web.Response(text="ok")
 
     sig = tuple(sorted(_fp(a) for a in firing))
 
     # Часть нод поднялась, остальные ещё лежат — это продолжение той же
-    # аварии, а не новая: отбой по поднявшимся, отсчёт напоминаний не трогаем.
+    # аварии: поднявшиеся зачёркиваются в карточке, отсчёт напоминаний идёт дальше.
     if state is not None and set(sig) < set(state["sig"]):
-        back = [a for a in resolved if _fp(a) in state["sig"]]
+        state["back"] = state.get("back", []) + [a for a in resolved if _fp(a) in state["sig"]]
         state["sig"] = sig
-        if closes and back:
-            await _send(render.alert_resolved(back, still=firing), silent=True, reply_to=state.get("msg"))
+        if closes:
+            await settle(state, *card())
         return web.Response(text="ok")
 
-    # Состав группы — часть опознавательного знака: если к аварии добавилась
-    # ещё одна нода, это новая ситуация, а не продолжение старой.
     if state is None or state["sig"] != sig:
-        # О разовых событиях пишем только про новые ноды: про старые уже сказано.
-        shown = [a for a in firing if not (once and state and _fp(a) in state["sig"])]
-        keyboard = snooze_buttons(remember_group({**payload, "alerts": firing}, key)) if reminds else None
-        msg = await _send(render.alert_group({**payload, "alerts": shown}), keyboard, silent=silent)
-        _escalation[key] = {"sig": sig, "since": now, "last": now, "step": 0, "msg": msg}
+        if once and state:
+            # О разовом событии на новой ноде — отдельное сообщение только
+            # про неё: про остальные уже сказано, их сообщение остаётся как есть.
+            fresh = [a for a in firing if _fp(a) not in state["sig"]]
+            state["sig"] = sig
+            await _send(render.alert_group({**payload, "alerts": fresh}), silent=silent)
+            return web.Response(text="ok")
+        # Новая проблема или к старой добавилась нода: карточка со звуком,
+        # внизу ленты, со всеми нодами сразу. Прежняя версия убирается.
+        since = state["since"] if state else now
+        text, keyboard = card(now - since if state else None)
+        msg = await repost(state, text, keyboard, silent=silent)
+        _escalation[key] = {"sig": sig, "since": since, "last": now, "step": 0, "msg": msg,
+                            "back": state.get("back", []) if state else []}
         return web.Response(text="ok")
 
     if not reminds:
@@ -991,8 +1064,7 @@ async def handle_alerts(request: web.Request) -> web.Response:
 
     state["last"] = now
     state["step"] += 1
-    await _send(render.alert_group({**payload, "alerts": firing}, since=now - state["since"]),
-                snooze_buttons(remember_group({**payload, "alerts": firing}, key)), silent=silent)
+    state["msg"] = await repost(state, *card(now - state["since"]), silent=silent) or state["msg"]
     return web.Response(text="ok")
 
 

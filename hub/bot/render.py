@@ -183,16 +183,17 @@ def mute_list(rows: list[dict], kinds: dict[str, tuple[str, str]]) -> str:
     return "\n".join(lines)
 
 
-def alert_group(payload: dict, since: float | None = None) -> str:
+def alert_group(payload: dict, since: float | None = None, back: list[dict] | None = None) -> str:
     """
-    Одно сообщение на группу алертов. Двадцать четыре письма про одно и то же
-    событие читать никто не станет, а значит и аварию в них не разглядит.
-    Здесь только горящие алерты: про отбой пишет alert_resolved.
+    Карточка проблемы: одно сообщение на группу алертов. Двадцать четыре
+    письма про одно и то же событие читать никто не станет, а значит и аварию
+    в них не разглядит. back — ноды из этой группы, которые уже поднялись:
+    они остаются в карточке зачёркнутыми, чтобы было видно, что прошло.
     """
     alerts = payload.get("alerts", [])
     if not alerts:
         return ""
-    if len(alerts) == 1:
+    if len(alerts) == 1 and not back:
         text = alert_message(alerts[0])
         return text + (f"\n<i>длится {duration(since)}</i>" if since else "")
 
@@ -204,6 +205,9 @@ def alert_group(payload: dict, since: float | None = None) -> str:
     for a in sorted(alerts, key=_node):
         hoster = a.get("labels", {}).get("hoster")
         lines.append(f"  • {_node(a)}" + (f" <i>({hoster})</i>" if hoster else ""))
+    for a in sorted(back or [], key=_node):
+        took = lasted(a)
+        lines.append(f"  ✅ <s>{_node(a)}</s>" + (f" — {duration(took)}" if took is not None else ""))
 
     action = first.get("labels", {}).get("action")
     if action:
@@ -225,16 +229,16 @@ def alert_message(alert: dict) -> str:
     return "\n".join(body)
 
 
-def alert_resolved(alerts: list[dict], still: list[dict] | None = None) -> str:
+def alert_resolved(alerts: list[dict]) -> str:
     """
-    Отбой. Проблема зачёркнута, рядом — сколько она длилась: по одной строке
-    сразу понятно, что прошло и было ли это мгновенное моргание или авария.
-    still — то, что из той же группы ещё горит, если поднялось не всё.
+    Отбой: во что превращается карточка, когда проблема прошла. Проблема
+    зачёркнута, рядом — сколько длилась: по одной строке понятно, было это
+    мгновенное моргание или авария.
     """
     if not alerts:
         return ""
     kind = _kind(alerts[0])
-    if len(alerts) == 1 and not still:
+    if len(alerts) == 1:
         a = alerts[0]
         node = f"<b>{_node(a)}</b> — " if a.get("labels", {}).get("node") else ""
         took = lasted(a)
@@ -245,8 +249,6 @@ def alert_resolved(alerts: list[dict], still: list[dict] | None = None) -> str:
     for a in sorted(alerts, key=_node):
         took = lasted(a)
         lines.append(f"  • {_node(a)}" + (f" — {duration(took)}" if took is not None else ""))
-    if still:
-        lines += ["", f"<i>ещё не прошло: {', '.join(sorted(_node(a) for a in still))}</i>"]
     return "\n".join(lines)
 
 

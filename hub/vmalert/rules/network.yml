@@ -32,6 +32,7 @@ groups:
   - alert: ChannelSaturated
     expr: node:net_tx:bps / on(project, node) node:link_capacity:bps > 0.85
     for: 15m
+    keep_firing_for: 15m
     labels: {severity: warning}
     annotations:
       summary: "📡 [{{ $labels.project }}] {{ $labels.node }} — канал загружен более чем на 85%"
@@ -43,6 +44,7 @@ groups:
       sum by(project, node) (rate(node_network_receive_drop_total{device!~"lo|veth.*|docker.*"}[10m])
                   + rate(node_network_transmit_drop_total{device!~"lo|veth.*|docker.*"}[10m])) > 50
     for: 15m
+    keep_firing_for: 15m
     labels: {severity: warning}
     annotations:
       summary: "📉 [{{ $labels.project }}] {{ $labels.node }} — {{ $value | printf \"%.0f\" }} дропов/с на интерфейсе"

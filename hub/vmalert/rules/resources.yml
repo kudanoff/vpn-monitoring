@@ -13,9 +13,12 @@ groups:
   - record: node:mem_used:ratio
     expr: 1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)
 
+  # keep_firing_for — гистерезис, как у PanelHighCPU: без него нагрузка
+  # около порога даёт «сработал — отбой» по кругу.
   - alert: HighCPU
     expr: node:cpu_busy:ratio > 0.90
     for: 15m
+    keep_firing_for: 15m
     labels: {severity: warning}
     annotations:
       summary: "🔥 [{{ $labels.project }}] {{ $labels.node }} — CPU {{ $value | humanizePercentage }} более 15 минут"
@@ -25,6 +28,7 @@ groups:
   - alert: HighCPUSteal
     expr: avg by(project, node) (rate(node_cpu_seconds_total{mode="steal"}[10m])) > 0.10
     for: 20m
+    keep_firing_for: 15m
     labels:
       severity: warning
       action: "жаловаться хостеру или переезжать"
@@ -34,6 +38,7 @@ groups:
   - alert: HighMemory
     expr: node:mem_used:ratio > 0.92
     for: 15m
+    keep_firing_for: 15m
     labels: {severity: warning}
     annotations:
       summary: "🧠 [{{ $labels.project }}] {{ $labels.node }} — память занята на {{ $value | humanizePercentage }}"

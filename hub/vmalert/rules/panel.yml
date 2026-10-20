@@ -69,9 +69,14 @@ groups:
   interval: 30s
   rules:
 
+  # keep_firing_for у нагрузки — гистерезис: процессор, который ходит вокруг
+  # порога, иначе даёт «сработал» и через минуту «отбой», и так по кругу.
+  # Отбой приходит, только когда нагрузка 15 минут держится ниже порога.
+
   - alert: PanelHighCPU
     expr: node:panel_cpu > 0.90
     for: 15m
+    keep_firing_for: 15m
     labels: {severity: warning}
     annotations:
       summary: "🔥 [{{ $labels.project }}] {{ $labels.node }} — процессор загружен на {{ $value | humanizePercentage }}"
@@ -79,6 +84,7 @@ groups:
   - alert: PanelHighMemory
     expr: node:panel_mem > 0.92
     for: 15m
+    keep_firing_for: 15m
     labels: {severity: warning}
     annotations:
       summary: "🧠 [{{ $labels.project }}] {{ $labels.node }} — память занята на {{ $value | humanizePercentage }}"

@@ -108,6 +108,12 @@ dp = Dispatcher()
 # Бот пишет признак в VictoriaMetrics, правило NodeDisabledInPanel поднимает
 # по нему тихий алерт, а Alertmanager глушит им все прочие алерты ноды.
 _disabled: set[str] = set()
+# Узнал ли бот у панели, какие ноды выключены. До этого об авариях не пишем:
+# сразу после перезапуска любая выключенная нода выглядит упавшей.
+_panel_known = False
+# Дольше этого не ждём — если панель недоступна, лишний шум лучше молчания.
+PANEL_WAIT_SECONDS = 3 * 60
+_started = time.time()
 
 
 def hidden(node: str) -> bool:
@@ -175,11 +181,12 @@ async def push_disabled(session: aiohttp.ClientSession, names: list[str]) -> Non
 async def watch_panel() -> None:
     """
     Раз в минуту сверяемся с панелью. Если панель недоступна, помним прошлый
-    список, но в базу его не пишем: признак через несколько минут устареет,
-    и алерты по нодам снова пойдут. Лишний шум лучше молчания вслепую.
+    список, но в базу его не пишем: признак через час устареет, и алерты
+    по нодам снова пойдут. Лишний шум лучше молчания вслепую.
     """
-    global _disabled
+    global _disabled, _panel_known
     if not (PROJECT and PANEL_API_URL):
+        _panel_known = True
         log.warning("PANEL_API_URL_%s не задан — выключенные в панели ноды не отслеживаются", _PU)
         return
     async with aiohttp.ClientSession() as session:
@@ -191,6 +198,7 @@ async def watch_panel() -> None:
                     if now != _disabled:
                         log.info("выключены в панели: %s", ", ".join(sorted(now)) or "нет")
                     _disabled = now
+                    _panel_known = True
                     await push_disabled(session, [n["name"] for n in nodes if n.get("name")])
                 else:
                     log.warning("API панели вернул пустой список нод")
@@ -997,7 +1005,16 @@ async def handle_alerts(request: web.Request) -> web.Response:
     показывает табло, и сюда за ним ходить не нужно.
     """
     payload = await request.json()
-    alerts = payload.get("alerts", [])
+    if not _panel_known and time.time() - _started < PANEL_WAIT_SECONDS:
+        # Бот только запустился и ещё не знает, какие ноды выключены.
+        # Alertmanager повторяет ежеминутно — ничего не потеряется.
+        return web.Response(text="ok")
+    # Выключенные в панели и служебные ноды бот знает и сам: Alertmanager
+    # их глушит, но если признак в базе не успел — здесь вторая страховка.
+    # Если нода выключена посреди аварии, она просто уйдёт из сообщения.
+    alerts = [a for a in payload.get("alerts", [])
+              if not hidden(a.get("labels", {}).get("node", ""))]
+    payload = {**payload, "alerts": alerts}
     firing = [a for a in alerts if a.get("status") == "firing"]
     resolved = [a for a in alerts if a.get("status") == "resolved"]
     key = payload.get("groupKey") or str(sorted(payload.get("groupLabels", {}).items()))

@@ -20,6 +20,8 @@ groups:
     annotations:
       summary: "🔴 [{{ $labels.project }}] {{ $labels.node }} — сервер недоступен"
       description: "Не отвечает ни агент, ни ICMP ни из одной локации. Хостер: {{ $labels.hoster }}."
+      # Сколько правило выжидало (for): бот прибавляет это к «лежит N мин».
+      pending_seconds: "300"
 
   # Ключевое правило: нода жива и пингуется из NL, но не из РФ.
   # Почти всегда это блокировка IP по ТСПУ, а не авария сервера.
@@ -34,19 +36,22 @@ groups:
     annotations:
       summary: "🚧 [{{ $labels.project }}] {{ $labels.node }} — недоступна из РФ, но жива"
       description: "Из NL пингуется, из РФ нет. Похоже на блокировку {{ $labels.public_ip }} по ТСПУ."
+      pending_seconds: "300"
 
   # Сервер и сеть в порядке, но порт xray из РФ не открывается —
-  # либо зарезан именно порт, либо xray не слушает.
+  # либо зарезан именно порт, либо xray не слушает. Для клиентов это то же,
+  # что лежащий сервер, поэтому авария.
   - alert: XrayPortUnreachableFromRussia
     expr: |
       probe_success{job="probe_ru_tcp"} == 0
         and on(project, node) probe_success{job="probe_ru", vantage="ru"} == 1
     for: 5m
     labels:
-      severity: warning
+      severity: critical
       action: "проверить xray на ноде / блокировку порта"
     annotations:
       summary: "⚠️ [{{ $labels.project }}] {{ $labels.node }} — ICMP из РФ идёт, а {{ $labels.tcp_target }} не отвечает"
+      pending_seconds: "300"
 
   # Агент жив, значит железо в порядке — проблема в xray или в линке до панели.
   - alert: PanelLostNodeButHostAlive

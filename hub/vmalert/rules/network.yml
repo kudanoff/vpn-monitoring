@@ -49,13 +49,11 @@ groups:
     annotations:
       summary: "📉 [{{ $labels.project }}] {{ $labels.node }} — {{ $value | printf \"%.0f\" }} дропов/с на интерфейсе"
 
-  # Хостер молча перевёл порт с гигабита на что-то поменьше. Это событие,
-  # а не состояние: «восстановиться» ему нечему, поэтому notify: once —
-  # одно сообщение без напоминаний и без отбоя.
+  # Хостер молча перевёл порт с гигабита на что-то поменьше. Висит на табло час.
   - alert: LinkSpeedChanged
     expr: |
       changes(node_network_speed_bytes{device!~"lo|veth.*|docker.*|wg.*"}[1h]) > 0
-    labels: {severity: warning, notify: once}
+    labels: {severity: warning}
     annotations:
       summary: "🔌 [{{ $labels.project }}] {{ $labels.node }} — сменилась скорость линка на {{ $labels.device }}"
 
